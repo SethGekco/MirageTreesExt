@@ -116,7 +116,7 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 		CellStruct const target { static_cast<short>(anchor.X + dx),
 								  static_cast<short>(anchor.Y + dy) };
 
-		auto const pCell = MapClass::Instance->TryGetCellAt(target);
+		auto const pCell = MapClass::Instance.TryGetCellAt(target);
 		if (!pCell)
 			continue;
 
