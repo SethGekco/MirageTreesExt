@@ -1,0 +1,23 @@
+# Build output directories
+Debug/
+DevBuild/
+Release/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+ipch/
+
+# Object files
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Keep the DLL out of source control (built by CI)
+*.dll
+*.bak
