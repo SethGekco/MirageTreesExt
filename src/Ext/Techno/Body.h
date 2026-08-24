@@ -38,10 +38,14 @@ public:
 		// that it has moved and tear the forest down.
 		CellStruct MirageAnchor;
 
+		// Diagnostic: log the "seen a mirage-capable techno" line once only.
+		bool MirageDiagLogged;
+
 		ExtData(TechnoClass* OwnerObject) : Extension<TechnoClass>(OwnerObject)
 			, MirageTrees {}
 			, MirageActive { false }
 			, MirageAnchor {}
+			, MirageDiagLogged { false }
 		{ }
 
 		virtual ~ExtData() override;

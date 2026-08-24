@@ -14,6 +14,7 @@ wchar_t MirageTreesExtDLL::wideBuffer[MirageTreesExtDLL::readLength];
 void MirageTreesExtDLL::ExeRun()
 {
     Patch::ApplyStatic();
+    Debug::Log("[MirageTreesExt] loaded (decoy-forest mirage runtime active)\n");
 }
 
 bool __stdcall DllMain(HANDLE hInstance, DWORD dwReason, LPVOID)

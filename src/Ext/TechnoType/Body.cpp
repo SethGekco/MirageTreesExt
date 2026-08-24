@@ -2,6 +2,7 @@
 
 #include <RulesClass.h>
 #include <Utilities/Macro.h>
+#include <Utilities/Debug.h>
 
 TechnoTypeExt::ExtContainer TechnoTypeExt::ExtMap;
 
@@ -19,6 +20,21 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 	this->MirageDistance.Read(exINI, pSection, "Mirage.Distance");
 	this->MirageCount.Read(exINI, pSection, "Mirage.Count");
 	this->MirageHealth.Read(exINI, pSection, "Mirage.Health");
+
+	// Diagnostic: only for disguise-capable types (rare) so the log stays quiet.
+	const auto pType = this->OwnerObject();
+	const auto& pool = this->MirageDefaultDisguises.GetElements(
+		RulesClass::Instance->DefaultMirageDisguises);
+	if (pType->CanDisguise || !pool.empty())
+	{
+		Debug::Log("[MirageTreesExt] parsed %s: canDisguise=%d disguiseWhenStill=%d "
+			"pool=%d count=(%d,%d) dist=(%d,%d) health=%d hasMirage=%d\n",
+			pSection, pType->CanDisguise, pType->DisguiseWhenStill,
+			static_cast<int>(pool.size()),
+			this->MirageCount.Get().X, this->MirageCount.Get().Y,
+			this->MirageDistance.Get().X, this->MirageDistance.Get().Y,
+			this->MirageHealth.Get(), this->HasMirageTrees());
+	}
 }
 
 bool TechnoTypeExt::ExtData::HasMirageTrees() const

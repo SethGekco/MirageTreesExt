@@ -30,6 +30,7 @@
 #include <RulesClass.h>
 
 #include <Utilities/Macro.h>
+#include <Utilities/Debug.h>
 
 #include <Ext/Techno/Body.h>
 #include <Ext/TechnoType/Body.h>
@@ -96,6 +97,9 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 
 	CellStruct const anchor = pThis->GetMapCoords();
 
+	Debug::Log("[MirageTreesExt] Spawn %s at (%d,%d) pool=%d\n",
+		pThis->GetTechnoType()->ID, anchor.X, anchor.Y, poolSize);
+
 	// Count and per-tree spread bounds (X=min, Y=max).
 	int const countMin = pTypeExt->MirageCount.Get().X;
 	int const countMax = pTypeExt->MirageCount.Get().Y;
@@ -132,13 +136,24 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 		// and register it with the global TerrainClass::Array.
 		auto const pTree = GameCreate<TerrainClass>(pTerrainType, target);
 		if (!pTree)
+		{
+			Debug::Log("[MirageTreesExt]   GameCreate FAILED for %s at (%d,%d)\n",
+				pTerrainType->ID, target.X, target.Y);
 			continue;
+		}
 
 		// Mirage.Health: hitpoints per decoy (0 => the TerrainType's own).
 		int const health = pTypeExt->MirageHealth > 0
 			? pTypeExt->MirageHealth.Get()
 			: pTerrainType->Strength;
 		pTree->Health = health;
+
+		// RE-VERIFY #1 probe: did the ctor place the tree on the map + Array?
+		CellStruct const placed = pTree->GetMapCoords();
+		Debug::Log("[MirageTreesExt]   tree %s created@(%d,%d) placed@(%d,%d) "
+			"inArray=%d inLimbo=%d hp=%d\n",
+			pTerrainType->ID, target.X, target.Y, placed.X, placed.Y,
+			TerrainClass::Array.FindItemIndex(pTree) != -1, pTree->InLimbo, health);
 
 		pExt->MirageTrees.push_back(pTree);
 	}
@@ -168,6 +183,10 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 		GameDelete(pTree);
 	}
 
+	if (!pExt->MirageTrees.empty())
+		Debug::Log("[MirageTreesExt] Clear %s: removed %d decoy(s)\n",
+			pThis->GetTechnoType()->ID, static_cast<int>(pExt->MirageTrees.size()));
+
 	pExt->MirageTrees.clear();
 	pExt->MirageActive = false;
 }
@@ -181,6 +200,20 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
 	if (!pExt)
 		return;
+
+	// One-time diagnostic per mirage-capable instance: proves the driver hook
+	// fires, the type parsed, and reports the live "still" gate.
+	if (!pExt->MirageDiagLogged)
+	{
+		auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+		if (pTypeExt && pTypeExt->HasMirageTrees())
+		{
+			pExt->MirageDiagLogged = true;
+			Debug::Log("[MirageTreesExt] seen %s still=%d shouldHave=%d\n",
+				pThis->GetTechnoType()->ID, MirageIsStill(pThis),
+				TechnoExt::ShouldHaveMirage(pThis));
+		}
+	}
 
 	// Fast reject: nothing to do and nothing laid down.
 	if (!pExt->MirageActive)
