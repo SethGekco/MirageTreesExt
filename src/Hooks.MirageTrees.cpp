@@ -40,15 +40,24 @@
 // State helpers
 // ---------------------------------------------------------------------------
 
-// Is this techno currently "still" for mirage purposes? Buildings are always
-// still; foot technos are still when their locomotor reports zero speed.
-static bool MirageIsStill(TechnoClass* pThis)
+// Should the decoy forest currently be shown for this techno?
+//
+// For UnitClass mirage (the Mirage Tank), the engine already maintains the
+// authoritative "am I showing my tree disguise right now" state in
+// TechnoClass::Disguised — it applies the settle delay when the unit stops and
+// clears the instant it moves. Gating on that makes the forest appear/disappear
+// exactly in step with the vanilla disguise, which is far more reliable than
+// sampling locomotor speed (which reads non-zero while decelerating and can read
+// zero for a frame mid-path). Buildings are always still. Infantry/aircraft have
+// no engine-managed mirage state, so they fall back to the still heuristic.
+static bool MirageShouldShow(TechnoClass* pThis)
 {
 	switch (pThis->WhatAmI())
 	{
+	case AbstractType::Unit:
+		return pThis->Disguised;
 	case AbstractType::Building:
 		return true;
-	case AbstractType::Unit:
 	case AbstractType::Infantry:
 	case AbstractType::Aircraft:
 	{
@@ -95,7 +104,7 @@ bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
 	if (!pTypeExt || !pTypeExt->HasMirageTrees())
 		return false;
 
-	return MirageIsStill(pThis);
+	return MirageShouldShow(pThis);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +248,7 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		{
 			pExt->MirageDiagLogged = true;
 			Debug::Log("[MirageTreesExt] seen %s still=%d shouldHave=%d\n",
-				pThis->GetTechnoType()->ID, MirageIsStill(pThis),
+				pThis->GetTechnoType()->ID, MirageShouldShow(pThis),
 				TechnoExt::ShouldHaveMirage(pThis));
 		}
 	}
