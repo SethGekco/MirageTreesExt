@@ -28,6 +28,7 @@
 #include <MapClass.h>
 #include <ScenarioClass.h>
 #include <RulesClass.h>
+#include <Memory.h>
 
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
@@ -57,6 +58,30 @@ static bool MirageIsStill(TechnoClass* pThis)
 	default:
 		return false;
 	}
+}
+
+// Create a real, PLACED tree on the given cell.
+//
+// The game's TerrainClass ctor (0x71BB90) takes the cell as a CellStruct* and
+// dereferences it, computing lepton coords and putting the tree on the map. YRpp
+// declares the ctor with the cell BY VALUE, so GameCreate<TerrainClass>(type,
+// cell) pushes the packed coords inline; the ctor then treats that value as a
+// pointer and dereferences it — landing the tree in limbo (unplaced) at best and
+// an access-violation crash at worst (confirmed: EIP 0x71BC31, ECX = a packed
+// cell value). So we allocate on the game heap and call the ctor directly with a
+// real pointer. Same "call the game address, don't trust the YRpp wrapper" trap
+// as R0/JMP_THIS mismatches.
+static TerrainClass* CreatePlacedTree(TerrainTypeClass* pType, CellStruct cell)
+{
+	auto const pTree = static_cast<TerrainClass*>(
+		YRMemory::AllocateChecked(sizeof(TerrainClass)));
+	if (!pTree)
+		return nullptr;
+
+	reinterpret_cast<TerrainClass* (__thiscall*)(TerrainClass*, TerrainTypeClass*, CellStruct*)>
+		(0x71BB90)(pTree, pType, &cell);
+
+	return pTree;
 }
 
 bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
@@ -120,11 +145,15 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 		CellStruct const target { static_cast<short>(anchor.X + dx),
 								  static_cast<short>(anchor.Y + dy) };
 
+		// Never place a decoy on the techno's own cell.
+		if (target == anchor)
+			continue;
+
 		auto const pCell = MapClass::Instance.TryGetCellAt(target);
 		if (!pCell)
 			continue;
 
-		// Don't stack on an existing tree or on the techno's own cell.
+		// Don't stack on an existing tree.
 		if (pCell->GetTerrain(false) != nullptr)
 			continue;
 
@@ -134,10 +163,10 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 
 		// RE-VERIFY #1: ctor @0x71BB90 is expected to place the tree on `target`
 		// and register it with the global TerrainClass::Array.
-		auto const pTree = GameCreate<TerrainClass>(pTerrainType, target);
+		auto const pTree = CreatePlacedTree(pTerrainType, target);
 		if (!pTree)
 		{
-			Debug::Log("[MirageTreesExt]   GameCreate FAILED for %s at (%d,%d)\n",
+			Debug::Log("[MirageTreesExt]   alloc FAILED for %s at (%d,%d)\n",
 				pTerrainType->ID, target.X, target.Y);
 			continue;
 		}
