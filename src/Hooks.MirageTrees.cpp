@@ -462,6 +462,18 @@ DEFINE_HOOK(0x71C2DC, TerrainClass_Draw_MirageBlit, 0x6)
 	return 0;
 }
 
+// The shadow blit (0x71C34E) reuses the tree's flags in ESI, so our translucency
+// leaks onto the shadow and wrecks its darken palette. Strip the translucency
+// bits (TransLucent25/50/75 all live in mask 0x6) right where the game ORs in
+// Darken for the shadow, so only the tree fades. Base tree flags never set 0x6,
+// so this is a no-op for normal trees.
+DEFINE_HOOK(0x71C325, TerrainClass_Draw_MirageShadowFix, 0x3)
+{
+	GET(DWORD, flags, ESI);
+	R->ESI((flags & ~0x6u) | 0x1u); // clear translucency, keep the game's Darken
+	return 0x71C328;
+}
+
 // Drop a decoy from the fade registry when the engine destroys it (e.g. shot
 // down), so a later tree reusing its address is not mistaken for a decoy.
 // Same address as Phobos's TerrainClass NowDead hook — chaining is safe.
