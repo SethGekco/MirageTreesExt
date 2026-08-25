@@ -18,6 +18,7 @@
 // ============================================================================
 
 #include <algorithm>
+#include <unordered_map>
 
 #include <TechnoClass.h>
 #include <FootClass.h>
@@ -28,6 +29,9 @@
 #include <MapClass.h>
 #include <ScenarioClass.h>
 #include <RulesClass.h>
+#include <HouseClass.h>
+#include <Unsorted.h>
+#include <Fundamentals.h>
 #include <Memory.h>
 
 #include <Utilities/Macro.h>
@@ -35,6 +39,103 @@
 
 #include <Ext/Techno/Body.h>
 #include <Ext/TechnoType/Body.h>
+
+// ---------------------------------------------------------------------------
+// Fade rendering — owner/allies see decoys as translucent/pulsing so they can
+// tell their own fakes from real trees; enemies see solid trees. Opt-in via
+// Mirage.FadeStyle (default off).
+//
+// TerrainClass trees are ownerless, so we keep a side registry of the decoys we
+// spawned (owner house + the fade config captured at spawn time). At terrain
+// draw (0x71C2BC/0x71C2DC, inside TerrainClass::Draw) we look up the tree and,
+// for an in-audience observer, OR a TransLucent flag into the blit flags before
+// the tree SHP is drawn.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	enum FadeAudience { AUD_NONE = 0, AUD_OWNER = 1, AUD_ALLIES = 2, AUD_ALL = 3 };
+	enum FadeStyle { STY_NONE = 0, STY_PULSE = 1, STY_TRANSLUCENT = 2, STY_SPAWN = 3 };
+
+	struct DecoyInfo
+	{
+		HouseClass* Owner;
+		int Audience;
+		int Style;
+		int Opacity;
+		int PulseRate;
+		int SpawnFrame;
+	};
+
+	std::unordered_map<TerrainClass*, DecoyInfo> DecoyRegistry;
+
+	// Blit flags for the currently-drawing decoy (set in the stash hook, read in
+	// the flags hook — same synchronous draw call, single-threaded renderer).
+	BlitterFlags CurrentDecoyBlit = BlitterFlags::None;
+
+	// Opacity 0..100 (100 = solid) → nearest engine translucency step.
+	BlitterFlags OpacityToBlit(int opacity)
+	{
+		if (opacity >= 88) return BlitterFlags::None;          // effectively solid
+		if (opacity >= 63) return BlitterFlags::TransLucent25;
+		if (opacity >= 38) return BlitterFlags::TransLucent50;
+		return BlitterFlags::TransLucent75;                    // most transparent
+	}
+
+	bool ObserverInAudience(const DecoyInfo& d)
+	{
+		auto const pObs = HouseClass::CurrentPlayer;
+		if (!pObs || !d.Owner)
+			return false;
+
+		switch (d.Audience)
+		{
+		case AUD_ALL:    return true;
+		case AUD_OWNER:  return pObs == d.Owner;
+		case AUD_ALLIES: return pObs == d.Owner || pObs->IsAlliedWith(d.Owner);
+		default:         return false; // AUD_NONE
+		}
+	}
+
+	BlitterFlags ComputeDecoyBlit(TerrainClass* pTree)
+	{
+		auto const it = DecoyRegistry.find(pTree);
+		if (it == DecoyRegistry.end())
+			return BlitterFlags::None;
+
+		auto const& d = it->second;
+		if (d.Style == STY_NONE || !ObserverInAudience(d))
+			return BlitterFlags::None;
+
+		int const rate = d.PulseRate > 0 ? d.PulseRate : 15;
+
+		switch (d.Style)
+		{
+		case STY_TRANSLUCENT:
+			return OpacityToBlit(d.Opacity);
+
+		case STY_SPAWN:
+		{
+			// Fade in from most-transparent to solid over the first few steps
+			// after spawning, then stay solid.
+			static const BlitterFlags ramp[3] = {
+				BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+			int const step = (Unsorted::CurrentFrame - d.SpawnFrame) / rate;
+			return step >= 3 ? BlitterFlags::None : ramp[step];
+		}
+
+		case STY_PULSE:
+		default:
+		{
+			// Oscillate solid → …→ most transparent → …→ solid (period 6 steps).
+			static const BlitterFlags cycle[6] = {
+				BlitterFlags::None, BlitterFlags::TransLucent25, BlitterFlags::TransLucent50,
+				BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+			return cycle[(Unsorted::CurrentFrame / rate) % 6];
+		}
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // State helpers
@@ -194,6 +295,13 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 			TerrainClass::Array.FindItemIndex(pTree) != -1, pTree->InLimbo, health);
 
 		pExt->MirageTrees.push_back(pTree);
+
+		// Register for fade rendering (owner + captured config).
+		DecoyRegistry[pTree] = DecoyInfo {
+			pThis->Owner,
+			pTypeExt->MirageFadeAudience, pTypeExt->MirageFadeStyle,
+			pTypeExt->MirageFadeOpacity, pTypeExt->MirageFadePulseRate,
+			Unsorted::CurrentFrame };
 	}
 
 	pExt->MirageActive = true;
@@ -210,6 +318,8 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 	{
 		if (!pTree)
 			continue;
+
+		DecoyRegistry.erase(pTree);
 
 		// Only touch trees the engine still knows about (a decoy the player
 		// shot down is already gone and was dropped via InvalidatePointer).
@@ -288,5 +398,42 @@ DEFINE_HOOK(0x43FE69, BuildingClass_AI_MirageTrees, 0xA)
 {
 	GET(BuildingClass* const, pThis, ESI);
 	TechnoExt::UpdateMirageTrees(pThis);
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Fade rendering hooks — inside TerrainClass::Draw.
+//   0x71C2BC: ESI = the tree about to be drawn (also a Phobos palette hook —
+//             same-address chaining is safe). Decide the decoy fade here while
+//             ESI still holds the tree.
+//   0x71C2DC: the blit flags have just converged into ESI (0x2E00 / 0x4E00),
+//             right before the tree's SHP blit at 0x71C304 (the later 0x71C34E
+//             blit is the shadow). OR in the translucency for a fading decoy.
+// ---------------------------------------------------------------------------
+
+DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
+{
+	GET(TerrainClass*, pThis, ESI);
+	CurrentDecoyBlit = ComputeDecoyBlit(pThis);
+	return 0;
+}
+
+DEFINE_HOOK(0x71C2DC, TerrainClass_Draw_MirageBlit, 0x6)
+{
+	if (CurrentDecoyBlit != BlitterFlags::None)
+	{
+		GET(DWORD, flags, ESI);
+		R->ESI(flags | static_cast<DWORD>(CurrentDecoyBlit));
+	}
+	return 0;
+}
+
+// Drop a decoy from the fade registry when the engine destroys it (e.g. shot
+// down), so a later tree reusing its address is not mistaken for a decoy.
+// Same address as Phobos's TerrainClass NowDead hook — chaining is safe.
+DEFINE_HOOK(0x71BB2C, TerrainClass_NowDead_MirageErase, 0x6)
+{
+	GET(TerrainClass*, pThis, ESI);
+	DecoyRegistry.erase(pThis);
 	return 0;
 }

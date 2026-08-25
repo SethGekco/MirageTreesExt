@@ -44,12 +44,35 @@ public:
 		// TerrainType's own Strength). "damage before they vanish".
 		Valueable<int> MirageHealth;
 
+		// --- Fade rendering (owner/allies see decoys as translucent/pulsing so
+		//     they can tell their own fakes from real trees; enemies see solid).
+		//     All customizable; feature is OFF by default (FadeStyle=none). ---
+
+		// Mirage.FadeAudience : who sees the fade. none|owner|allies|all.
+		//   0=none 1=owner 2=owner+allies 3=all
+		Valueable<int> MirageFadeAudience;
+
+		// Mirage.FadeStyle : how the fade looks. none|pulse|translucent|spawn.
+		//   0=none(solid) 1=pulse(oscillate) 2=translucent(fixed) 3=spawn(fade-in)
+		Valueable<int> MirageFadeStyle;
+
+		// Mirage.FadeOpacity : target opacity 0..100 for translucent/spawn
+		//   (100=solid). Snapped to the engine's 25/50/75 translucency steps.
+		Valueable<int> MirageFadeOpacity;
+
+		// Mirage.FadePulseRate : frames per translucency step when pulsing.
+		Valueable<int> MirageFadePulseRate;
+
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
 			, MirageDefaultDisguises {}
 			, MirageAttackCursorOnDisguise { true }
 			, MirageDistance { { 0, 0 } }
 			, MirageCount { { 1, 1 } }
 			, MirageHealth { 0 }
+			, MirageFadeAudience { 2 }   // owner + allies
+			, MirageFadeStyle { 0 }      // off (solid) unless configured
+			, MirageFadeOpacity { 50 }
+			, MirageFadePulseRate { 15 }
 		{ }
 
 		virtual ~ExtData() = default;

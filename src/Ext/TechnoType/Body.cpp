@@ -1,8 +1,29 @@
 #include "Body.h"
 
+#include <cstring>
+
 #include <RulesClass.h>
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
+
+// Map a small set of INI keywords to our enum ints. Case-insensitive; unknown
+// values keep the supplied default.
+static int ParseKeyword(CCINIClass* pINI, const char* pSection, const char* pKey,
+	int fallback, std::initializer_list<const char*> words)
+{
+	char buffer[32];
+	if (pINI->ReadString(pSection, pKey, "", buffer, sizeof(buffer)) <= 0)
+		return fallback;
+
+	int i = 0;
+	for (auto const word : words)
+	{
+		if (_stricmp(buffer, word) == 0)
+			return i;
+		++i;
+	}
+	return fallback;
+}
 
 TechnoTypeExt::ExtContainer TechnoTypeExt::ExtMap;
 
@@ -20,6 +41,14 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 	this->MirageDistance.Read(exINI, pSection, "Mirage.Distance");
 	this->MirageCount.Read(exINI, pSection, "Mirage.Count");
 	this->MirageHealth.Read(exINI, pSection, "Mirage.Health");
+
+	// Fade config. Keyword enums parsed leniently; numeric knobs via Valueable.
+	this->MirageFadeAudience = ParseKeyword(pINI, pSection, "Mirage.FadeAudience",
+		this->MirageFadeAudience, { "none", "owner", "allies", "all" });
+	this->MirageFadeStyle = ParseKeyword(pINI, pSection, "Mirage.FadeStyle",
+		this->MirageFadeStyle, { "none", "pulse", "translucent", "spawn" });
+	this->MirageFadeOpacity.Read(exINI, pSection, "Mirage.FadeOpacity");
+	this->MirageFadePulseRate.Read(exINI, pSection, "Mirage.FadePulseRate");
 
 	// Diagnostic: only for disguise-capable types (rare) so the log stays quiet.
 	const auto pType = this->OwnerObject();
@@ -62,6 +91,10 @@ void TechnoTypeExt::ExtData::Serialize(T& Stm)
 		.Process(this->MirageDistance)
 		.Process(this->MirageCount)
 		.Process(this->MirageHealth)
+		.Process(this->MirageFadeAudience)
+		.Process(this->MirageFadeStyle)
+		.Process(this->MirageFadeOpacity)
+		.Process(this->MirageFadePulseRate)
 		;
 }
 
