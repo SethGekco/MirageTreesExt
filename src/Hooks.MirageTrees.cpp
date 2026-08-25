@@ -464,14 +464,20 @@ DEFINE_HOOK(0x71C2DC, TerrainClass_Draw_MirageBlit, 0x6)
 
 // The shadow blit (0x71C34E) reuses the tree's flags in ESI, so our translucency
 // leaks onto the shadow and wrecks its darken palette. Strip the translucency
-// bits (TransLucent25/50/75 all live in mask 0x6) right where the game ORs in
-// Darken for the shadow, so only the tree fades. Base tree flags never set 0x6,
-// so this is a no-op for normal trees.
-DEFINE_HOOK(0x71C325, TerrainClass_Draw_MirageShadowFix, 0x3)
+// bits (TransLucent25/50/75 all live in mask 0x6) just AFTER the tree blit
+// (0x71C304) and before the shadow path, so only the tree fades.
+//
+// Hooked at the 5-byte `mov al,[0x822cf1]` right after the tree blit and return
+// 0 (safe continuation) — NOT the cramped 3-byte `or esi,1` at 0x71C325, whose
+// addr+size return landed on 0x71C328 and crashed (C0000005 @ 0x71C328).
+DEFINE_HOOK(0x71C309, TerrainClass_Draw_MirageShadowFix, 0x5)
 {
-	GET(DWORD, flags, ESI);
-	R->ESI((flags & ~0x6u) | 0x1u); // clear translucency, keep the game's Darken
-	return 0x71C328;
+	if (CurrentDecoyBlit != BlitterFlags::None)
+	{
+		GET(DWORD, flags, ESI);
+		R->ESI(flags & ~0x6u); // clear our translucency; game then ORs in Darken
+	}
+	return 0;
 }
 
 // Drop a decoy from the fade registry when the engine destroys it (e.g. shot
