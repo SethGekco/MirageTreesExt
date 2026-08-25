@@ -302,6 +302,12 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 			pTypeExt->MirageFadeAudience, pTypeExt->MirageFadeStyle,
 			pTypeExt->MirageFadeOpacity, pTypeExt->MirageFadePulseRate,
 			Unsorted::CurrentFrame };
+
+		// Paint the new decoy into the tactical view now. Static terrain is only
+		// repainted when its cell is dirty, so without this the tree doesn't
+		// appear until an incidental redraw or a manual scroll.
+		pTree->Mark(MarkType::ChangeRedraw);
+		pCell->MarkForRedraw();
 	}
 
 	pExt->MirageActive = true;
@@ -326,9 +332,13 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 		if (TerrainClass::Array.FindItemIndex(pTree) == -1)
 			continue;
 
-		// RE-VERIFY #2: detach from the cell then free.
+		// RE-VERIFY #2: detach from the cell then free, and dirty the vacated
+		// cell so the stale tree image is repainted away without a manual scroll.
+		auto const pCell = pTree->GetCell();
 		pTree->Limbo();
 		GameDelete(pTree);
+		if (pCell)
+			pCell->MarkForRedraw();
 	}
 
 	if (!pExt->MirageTrees.empty())
@@ -375,7 +385,25 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	// eligible (moving, destroyed, undisguised); it will be re-laid when it
 	// next settles.
 	if (!TechnoExt::ShouldHaveMirage(pThis) || pThis->GetMapCoords() != pExt->MirageAnchor)
+	{
 		TechnoExt::ClearMirageTrees(pThis);
+		return;
+	}
+
+	// Animated fade styles (pulse, spawn fade-in) need their decoy cells
+	// repainted every frame — static terrain is otherwise drawn once and cached,
+	// which would freeze the animation. Cheap: a few cells per techno.
+	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+	if (pTypeExt && (pTypeExt->MirageFadeStyle == STY_PULSE || pTypeExt->MirageFadeStyle == STY_SPAWN))
+	{
+		for (auto const pTree : pExt->MirageTrees)
+		{
+			if (!pTree || TerrainClass::Array.FindItemIndex(pTree) == -1)
+				continue;
+			if (auto const pCell = pTree->GetCell())
+				pCell->MarkForRedraw();
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
