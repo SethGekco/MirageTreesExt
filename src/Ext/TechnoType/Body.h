@@ -24,6 +24,12 @@ public:
 	class ExtData final : public Extension<TechnoTypeClass>
 	{
 	public:
+		// Mirage.Trees : explicit opt-in for the decoy-forest system, for ANY
+		// TechnoType (buildings/infantry/etc.) WITHOUT needing the vanilla
+		// CanDisguise/DisguiseWhenStill flags (which can trigger other engine
+		// behavior). Mirage Tanks still work automatically via those flags.
+		Valueable<bool> MirageEnabled;
+
 		// Mirage.DefaultDisguises=TREE01,TREE02,... : pool of TerrainTypes the
 		// decoy trees are drawn from. Falls back to the vanilla
 		// [General]DefaultMirageDisguises when unset (via GetElements).
@@ -64,6 +70,7 @@ public:
 		Valueable<int> MirageFadePulseRate;
 
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
+			, MirageEnabled { false }
 			, MirageDefaultDisguises {}
 			, MirageAttackCursorOnDisguise { true }
 			, MirageDistance { { 0, 0 } }

@@ -36,6 +36,7 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 
 	INI_EX exINI(pINI);
 
+	this->MirageEnabled.Read(exINI, pSection, "Mirage.Trees");
 	this->MirageDefaultDisguises.Read(exINI, pSection, "Mirage.DefaultDisguises");
 	this->MirageAttackCursorOnDisguise.Read(exINI, pSection, "Mirage.AttackCursorOnDisguise");
 	this->MirageDistance.Read(exINI, pSection, "Mirage.Distance");
@@ -50,11 +51,12 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 	this->MirageFadeOpacity.Read(exINI, pSection, "Mirage.FadeOpacity");
 	this->MirageFadePulseRate.Read(exINI, pSection, "Mirage.FadePulseRate");
 
-	// Diagnostic: only for disguise-capable types (rare) so the log stays quiet.
+	// Diagnostic: only for types that actually participate, so the log stays
+	// quiet (the global DefaultMirageDisguises fallback otherwise matches all).
 	const auto pType = this->OwnerObject();
 	const auto& pool = this->MirageDefaultDisguises.GetElements(
 		RulesClass::Instance->DefaultMirageDisguises);
-	if (pType->CanDisguise || !pool.empty())
+	if (this->HasMirageTrees())
 	{
 		Debug::Log("[MirageTreesExt] parsed %s: canDisguise=%d disguiseWhenStill=%d "
 			"pool=%d count=(%d,%d) dist=(%d,%d) health=%d hasMirage=%d\n",
@@ -70,9 +72,11 @@ bool TechnoTypeExt::ExtData::HasMirageTrees() const
 {
 	const auto pType = this->OwnerObject();
 
-	// Must be able to disguise while still — this is the trigger condition for
-	// laying down the decoy forest, and mirrors the vanilla mirage semantics.
-	if (!pType->CanDisguise || !pType->DisguiseWhenStill)
+	// Opt-in either explicitly (Mirage.Trees=yes, works for any TechnoType) or
+	// implicitly via the vanilla mirage flags (so Mirage Tanks light up for
+	// free). Without one of these, no decoy forest — otherwise the global
+	// DefaultMirageDisguises fallback would make every TechnoType qualify.
+	if (!this->MirageEnabled && !(pType->CanDisguise && pType->DisguiseWhenStill))
 		return false;
 
 	// Need at least one candidate TerrainType (own pool or vanilla fallback).
@@ -86,6 +90,7 @@ template <typename T>
 void TechnoTypeExt::ExtData::Serialize(T& Stm)
 {
 	Stm
+		.Process(this->MirageEnabled)
 		.Process(this->MirageDefaultDisguises)
 		.Process(this->MirageAttackCursorOnDisguise)
 		.Process(this->MirageDistance)
