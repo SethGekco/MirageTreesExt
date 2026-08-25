@@ -303,6 +303,11 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 			pTypeExt->MirageFadeOpacity, pTypeExt->MirageFadePulseRate,
 			Unsorted::CurrentFrame };
 
+		// Add to the logic layer so the engine treats it like animated terrain:
+		// it gets ticked and redrawn, which both integrates it into the normal
+		// draw pass and lets the fade animation actually repaint each frame.
+		LogicClass::Instance.AddObject(pTree, false);
+
 		// Paint the new decoy into the tactical view now. Static terrain is only
 		// repainted when its cell is dirty, so without this the tree doesn't
 		// appear until an incidental redraw or a manual scroll.
@@ -314,9 +319,8 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 	pExt->MirageAnchor = anchor;
 }
 
-void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
+void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt)
 {
-	auto const pExt = TechnoExt::ExtMap.Find(pThis);
 	if (!pExt)
 		return;
 
@@ -332,21 +336,23 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 		if (TerrainClass::Array.FindItemIndex(pTree) == -1)
 			continue;
 
-		// RE-VERIFY #2: detach from the cell then free, and dirty the vacated
-		// cell so the stale tree image is repainted away without a manual scroll.
+		// Detach from the logic layer and cell, free, and dirty the vacated cell
+		// so the stale tree image is repainted away without a manual scroll.
 		auto const pCell = pTree->GetCell();
+		LogicClass::Instance.RemoveObject(pTree);
 		pTree->Limbo();
 		GameDelete(pTree);
 		if (pCell)
 			pCell->MarkForRedraw();
 	}
 
-	if (!pExt->MirageTrees.empty())
-		Debug::Log("[MirageTreesExt] Clear %s: removed %d decoy(s)\n",
-			pThis->GetTechnoType()->ID, static_cast<int>(pExt->MirageTrees.size()));
-
 	pExt->MirageTrees.clear();
 	pExt->MirageActive = false;
+}
+
+void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
+{
+	TechnoExt::ClearMirageTreesFor(TechnoExt::ExtMap.Find(pThis));
 }
 
 // ---------------------------------------------------------------------------

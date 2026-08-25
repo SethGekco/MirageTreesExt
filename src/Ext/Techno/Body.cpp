@@ -6,8 +6,9 @@ TechnoExt::ExtContainer TechnoExt::ExtMap;
 
 TechnoExt::ExtData::~ExtData()
 {
-	// Make sure a dying techno never leaves orphaned decoy trees behind.
-	TechnoExt::ClearMirageTrees(this->OwnerObject());
+	// Make sure a dying techno never leaves orphaned decoy trees behind. Operate
+	// on this ext directly — ExtMap.Find would fail mid-removal.
+	TechnoExt::ClearMirageTreesFor(this);
 }
 
 void TechnoExt::ExtData::InvalidatePointer(void* ptr, bool bRemoved)

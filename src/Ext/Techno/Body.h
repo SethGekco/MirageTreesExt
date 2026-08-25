@@ -81,6 +81,12 @@ public:
 	// Tear down and delete every decoy tree this techno owns.
 	static void ClearMirageTrees(TechnoClass* pThis);
 
+	// Same teardown, but operating directly on the ExtData. Used by the ExtData
+	// destructor, which cannot ExtMap.Find itself while it is being removed —
+	// that lookup returns null, so a tank destroyed while parked (never moving,
+	// so the move-triggered clear never ran) would otherwise leak its decoys.
+	static void ClearMirageTreesFor(ExtData* pExt);
+
 	// Per-frame driver: spawn/despawn as the techno's state changes.
 	static void UpdateMirageTrees(TechnoClass* pThis);
 };
