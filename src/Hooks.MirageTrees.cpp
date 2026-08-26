@@ -415,8 +415,15 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	TechnoTypeExt::ExtData* pTypeExt)
 {
-	if (pThis->WhatAmI() == AbstractType::Unit)
-		return; // vanilla UnitClass mirage already handles units
+	// The vanilla terrain-disguise (render self AS a tree) is safe ONLY for
+	// UnitClass. Putting a TerrainType into an infantryman's Disguise field
+	// crashes InfantryClass::ReceiveDamage (0x518E08 — it indexes type data off a
+	// null pointer), and buildings ignore Disguise in their draw entirely. So this
+	// field-based path is units-only; infantry/building self-disguise needs a
+	// custom draw hook (renders the tree SHP over the techno for non-allies),
+	// which is the next phase.
+	if (pThis->WhatAmI() != AbstractType::Unit)
+		return;
 
 	bool const shouldShow = TechnoExt::ShouldHaveMirage(pThis);
 
