@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 #include <TechnoClass.h>
 #include <FootClass.h>
@@ -69,9 +70,51 @@ namespace
 
 	std::unordered_map<TerrainClass*, DecoyInfo> DecoyRegistry;
 
+	// Decoys queued for deletion on the next safe frame. Deleting a TerrainClass
+	// from inside a techno's destructor cascade broadcasts pointer-invalidation
+	// (BuildingClass::Detach etc.) to the half-destroyed techno and crashes
+	// (C0000005 @ 0x44E9AA when a mirage building dies). So the destructor path
+	// defers here and the per-frame driver frees them outside any dtor.
+	std::vector<TerrainClass*> PendingDecoyDeletes;
+
 	// Blit flags for the currently-drawing decoy (set in the stash hook, read in
 	// the flags hook — same synchronous draw call, single-threaded renderer).
 	BlitterFlags CurrentDecoyBlit = BlitterFlags::None;
+
+	// A tree's SHP overhangs its own cell (foliage draws upward on screen), so
+	// dirtying only its cell repaints just part of it — leaving "half the image"
+	// stale and ghosts when it is removed. Dirty a 3x3 block around it instead.
+	void DirtyDecoyArea(CellStruct center)
+	{
+		for (int dy = -1; dy <= 1; ++dy)
+			for (int dx = -1; dx <= 1; ++dx)
+			{
+				CellStruct const c { static_cast<short>(center.X + dx),
+									 static_cast<short>(center.Y + dy) };
+				if (auto const pC = MapClass::Instance.TryGetCellAt(c))
+					pC->MarkForRedraw();
+			}
+	}
+
+	// Free everything queued by the destructor path. Safe: runs from the
+	// per-frame driver, never inside an object's destruction.
+	void ProcessPendingDecoyDeletes()
+	{
+		if (PendingDecoyDeletes.empty())
+			return;
+
+		for (auto const pTree : PendingDecoyDeletes)
+		{
+			if (!pTree || TerrainClass::Array.FindItemIndex(pTree) == -1)
+				continue;
+			CellStruct const cell = pTree->GetMapCoords();
+			LogicClass::Instance.RemoveObject(pTree);
+			pTree->Limbo();
+			GameDelete(pTree);
+			DirtyDecoyArea(cell);
+		}
+		PendingDecoyDeletes.clear();
+	}
 
 	// Opacity 0..100 (100 = solid) → nearest engine translucency step.
 	BlitterFlags OpacityToBlit(int opacity)
@@ -310,16 +353,17 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 
 		// Paint the new decoy into the tactical view now. Static terrain is only
 		// repainted when its cell is dirty, so without this the tree doesn't
-		// appear until an incidental redraw or a manual scroll.
+		// appear until an incidental redraw or a manual scroll. Dirty the whole
+		// 3x3 block so the tree's overhang (not just its base cell) paints.
 		pTree->Mark(MarkType::ChangeRedraw);
-		pCell->MarkForRedraw();
+		DirtyDecoyArea(target);
 	}
 
 	pExt->MirageActive = true;
 	pExt->MirageAnchor = anchor;
 }
 
-void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt)
+void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt, bool deferDelete)
 {
 	if (!pExt)
 		return;
@@ -336,14 +380,22 @@ void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt)
 		if (TerrainClass::Array.FindItemIndex(pTree) == -1)
 			continue;
 
-		// Detach from the logic layer and cell, free, and dirty the vacated cell
-		// so the stale tree image is repainted away without a manual scroll.
-		auto const pCell = pTree->GetCell();
+		if (deferDelete)
+		{
+			// Destructor path: don't free now (that would crash the techno's own
+			// destruction cascade). Queue it; the per-frame driver frees it.
+			PendingDecoyDeletes.push_back(pTree);
+			continue;
+		}
+
+		// Normal (move-triggered) path: safe to free inline. Detach from the
+		// logic layer and cell, free, and dirty the vacated area so the stale
+		// tree image (which overhangs its cell) is fully repainted away.
+		CellStruct const cell = pTree->GetMapCoords();
 		LogicClass::Instance.RemoveObject(pTree);
 		pTree->Limbo();
 		GameDelete(pTree);
-		if (pCell)
-			pCell->MarkForRedraw();
+		DirtyDecoyArea(cell);
 	}
 
 	pExt->MirageTrees.clear();
@@ -361,6 +413,10 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 
 void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 {
+	// Free any decoys queued by a destroyed techno's dtor last frame — done here
+	// (outside any destruction cascade) so it is safe.
+	ProcessPendingDecoyDeletes();
+
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
 	if (!pExt)
 		return;
@@ -406,8 +462,9 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		{
 			if (!pTree || TerrainClass::Array.FindItemIndex(pTree) == -1)
 				continue;
-			if (auto const pCell = pTree->GetCell())
-				pCell->MarkForRedraw();
+			// Dirty the whole 3x3 block so the tree's overhang repaints, not just
+			// its base cell (which left "half the image" stale).
+			DirtyDecoyArea(pTree->GetMapCoords());
 		}
 	}
 }
@@ -487,5 +544,8 @@ DEFINE_HOOK(0x71BB2C, TerrainClass_NowDead_MirageErase, 0x6)
 {
 	GET(TerrainClass*, pThis, ESI);
 	DecoyRegistry.erase(pThis);
+	// Also drop it from the deferred-delete queue so we never free it twice.
+	auto& q = PendingDecoyDeletes;
+	q.erase(std::remove(q.begin(), q.end(), pThis), q.end());
 	return 0;
 }

@@ -85,7 +85,9 @@ public:
 	// destructor, which cannot ExtMap.Find itself while it is being removed —
 	// that lookup returns null, so a tank destroyed while parked (never moving,
 	// so the move-triggered clear never ran) would otherwise leak its decoys.
-	static void ClearMirageTreesFor(ExtData* pExt);
+	// deferDelete=true (the dtor path) queues the trees for freeing next frame
+	// instead of deleting inline, which would crash the techno's own dtor cascade.
+	static void ClearMirageTreesFor(ExtData* pExt, bool deferDelete = false);
 
 	// Per-frame driver: spawn/despawn as the techno's state changes.
 	static void UpdateMirageTrees(TechnoClass* pThis);
