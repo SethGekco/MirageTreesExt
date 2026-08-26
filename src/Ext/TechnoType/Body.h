@@ -30,6 +30,13 @@ public:
 		// behavior). Mirage Tanks still work automatically via those flags.
 		Valueable<bool> MirageEnabled;
 
+		// Mirage.Mode : how the disguise manifests.
+		//   0=decoy     : spawn separate real tree objects around the techno.
+		//   1=disguise  : the techno itself renders AS a tree (vanilla mirage
+		//                 self-disguise), extended to infantry (and buildings,
+		//                 which additionally need the building draw hook).
+		Valueable<int> MirageMode;
+
 		// Mirage.DefaultDisguises=TREE01,TREE02,... : pool of TerrainTypes the
 		// decoy trees are drawn from. Falls back to the vanilla
 		// [General]DefaultMirageDisguises when unset (via GetElements).
@@ -71,6 +78,7 @@ public:
 
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
 			, MirageEnabled { false }
+			, MirageMode { 0 }
 			, MirageDefaultDisguises {}
 			, MirageAttackCursorOnDisguise { true }
 			, MirageDistance { { 0, 0 } }

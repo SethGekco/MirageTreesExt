@@ -37,6 +37,8 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 	INI_EX exINI(pINI);
 
 	this->MirageEnabled.Read(exINI, pSection, "Mirage.Trees");
+	this->MirageMode = ParseKeyword(pINI, pSection, "Mirage.Mode",
+		this->MirageMode, { "decoy", "disguise" });
 	this->MirageDefaultDisguises.Read(exINI, pSection, "Mirage.DefaultDisguises");
 	this->MirageAttackCursorOnDisguise.Read(exINI, pSection, "Mirage.AttackCursorOnDisguise");
 	this->MirageDistance.Read(exINI, pSection, "Mirage.Distance");
@@ -91,6 +93,7 @@ void TechnoTypeExt::ExtData::Serialize(T& Stm)
 {
 	Stm
 		.Process(this->MirageEnabled)
+		.Process(this->MirageMode)
 		.Process(this->MirageDefaultDisguises)
 		.Process(this->MirageAttackCursorOnDisguise)
 		.Process(this->MirageDistance)

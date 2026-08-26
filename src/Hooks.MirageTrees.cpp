@@ -407,6 +407,49 @@ void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
 	TechnoExt::ClearMirageTreesFor(TechnoExt::ExtMap.Find(pThis));
 }
 
+// Disguise mode: the techno itself renders AS a tree, using the vanilla mirage
+// machinery (set Disguise to a TerrainType + Disguised, exactly like a Mirage
+// Tank). Units already do this natively, so we skip them. Infantry MAY render it
+// through the shared disguise draw; buildings ignore Disguise in their draw, so
+// they need the dedicated building draw hook (next phase) to show anything.
+static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
+	TechnoTypeExt::ExtData* pTypeExt)
+{
+	if (pThis->WhatAmI() == AbstractType::Unit)
+		return; // vanilla UnitClass mirage already handles units
+
+	bool const shouldShow = TechnoExt::ShouldHaveMirage(pThis);
+
+	if (shouldShow && !pExt->MirageActive)
+	{
+		auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
+			RulesClass::Instance->DefaultMirageDisguises);
+		int const size = static_cast<int>(disguises.size());
+		if (size <= 0)
+			return;
+
+		auto const pTree = disguises[ScenarioClass::Instance->Random.RandomRanged(0, size - 1)];
+		if (!pTree)
+			return;
+
+		pThis->Disguise = pTree;                 // TerrainTypeClass* -> ObjectTypeClass*
+		pThis->DisguisedAsHouse = pThis->Owner;
+		pThis->Disguised = true;
+		pExt->MirageActive = true;
+		pThis->Mark(MarkType::ChangeRedraw);
+
+		Debug::Log("[MirageTreesExt] disguise ON %s as %s\n",
+			pThis->GetTechnoType()->ID, pTree->ID);
+	}
+	else if (!shouldShow && pExt->MirageActive)
+	{
+		pThis->Disguised = false;
+		pThis->Disguise = nullptr;
+		pExt->MirageActive = false;
+		pThis->Mark(MarkType::ChangeRedraw);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-frame driver
 // ---------------------------------------------------------------------------
@@ -433,6 +476,15 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 				pThis->GetTechnoType()->ID, MirageShouldShow(pThis),
 				TechnoExt::ShouldHaveMirage(pThis));
 		}
+	}
+
+	// Route by mode: 1=disguise (techno renders as a tree itself), else 0=decoy
+	// (spawn separate tree objects, the default).
+	auto const pModeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+	if (pModeExt && pModeExt->MirageMode == 1)
+	{
+		UpdateMirageDisguise(pThis, pExt, pModeExt);
+		return;
 	}
 
 	// Fast reject: nothing to do and nothing laid down.
