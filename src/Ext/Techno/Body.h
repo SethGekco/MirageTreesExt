@@ -31,8 +31,12 @@ public:
 		// us).
 		std::vector<TerrainClass*> MirageTrees;
 
-		// Whether a forest is currently laid down.
+		// Whether a decoy forest is currently laid down.
 		bool MirageActive;
+
+		// Whether we currently have the techno self-disguised as a tree. Tracked
+		// separately from MirageActive so both effects can be on at once.
+		bool MirageDisguiseActive;
 
 		// Cell the techno occupied when the forest was laid, so we can detect
 		// that it has moved and tear the forest down.
@@ -44,6 +48,7 @@ public:
 		ExtData(TechnoClass* OwnerObject) : Extension<TechnoClass>(OwnerObject)
 			, MirageTrees {}
 			, MirageActive { false }
+			, MirageDisguiseActive { false }
 			, MirageAnchor {}
 			, MirageDiagLogged { false }
 		{ }

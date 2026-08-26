@@ -24,18 +24,16 @@ public:
 	class ExtData final : public Extension<TechnoTypeClass>
 	{
 	public:
-		// Mirage.Trees : explicit opt-in for the decoy-forest system, for ANY
-		// TechnoType (buildings/infantry/etc.) WITHOUT needing the vanilla
-		// CanDisguise/DisguiseWhenStill flags (which can trigger other engine
-		// behavior). Mirage Tanks still work automatically via those flags.
-		Valueable<bool> MirageEnabled;
-
-		// Mirage.Mode : how the disguise manifests.
-		//   0=decoy     : spawn separate real tree objects around the techno.
-		//   1=disguise  : the techno itself renders AS a tree (vanilla mirage
-		//                 self-disguise), extended to infantry (and buildings,
-		//                 which additionally need the building draw hook).
-		Valueable<int> MirageMode;
+		// The two effects are INDEPENDENT — a type can enable either or both:
+		//
+		// Mirage.Decoys : spawn separate real tree objects (the decoy forest)
+		//   around the techno. Works for any TechnoType.
+		Valueable<bool> MirageDecoys;
+		//
+		// Mirage.Disguise : the techno itself renders AS a tree (vanilla mirage
+		//   self-disguise). Units do this natively; infantry via the shared
+		//   disguise draw; buildings need the dedicated building draw hook.
+		Valueable<bool> MirageDisguise;
 
 		// Mirage.DefaultDisguises=TREE01,TREE02,... : pool of TerrainTypes the
 		// decoy trees are drawn from. Falls back to the vanilla
@@ -77,8 +75,8 @@ public:
 		Valueable<int> MirageFadePulseRate;
 
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
-			, MirageEnabled { false }
-			, MirageMode { 0 }
+			, MirageDecoys { false }
+			, MirageDisguise { false }
 			, MirageDefaultDisguises {}
 			, MirageAttackCursorOnDisguise { true }
 			, MirageDistance { { 0, 0 } }

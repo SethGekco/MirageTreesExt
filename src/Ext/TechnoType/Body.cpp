@@ -36,9 +36,8 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 
 	INI_EX exINI(pINI);
 
-	this->MirageEnabled.Read(exINI, pSection, "Mirage.Trees");
-	this->MirageMode = ParseKeyword(pINI, pSection, "Mirage.Mode",
-		this->MirageMode, { "decoy", "disguise" });
+	this->MirageDecoys.Read(exINI, pSection, "Mirage.Decoys");
+	this->MirageDisguise.Read(exINI, pSection, "Mirage.Disguise");
 	this->MirageDefaultDisguises.Read(exINI, pSection, "Mirage.DefaultDisguises");
 	this->MirageAttackCursorOnDisguise.Read(exINI, pSection, "Mirage.AttackCursorOnDisguise");
 	this->MirageDistance.Read(exINI, pSection, "Mirage.Distance");
@@ -72,13 +71,9 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 
 bool TechnoTypeExt::ExtData::HasMirageTrees() const
 {
-	const auto pType = this->OwnerObject();
-
-	// Opt-in either explicitly (Mirage.Trees=yes, works for any TechnoType) or
-	// implicitly via the vanilla mirage flags (so Mirage Tanks light up for
-	// free). Without one of these, no decoy forest — otherwise the global
-	// DefaultMirageDisguises fallback would make every TechnoType qualify.
-	if (!this->MirageEnabled && !(pType->CanDisguise && pType->DisguiseWhenStill))
+	// Participates if either effect is opted in. Explicit only — otherwise the
+	// global DefaultMirageDisguises fallback would make every TechnoType qualify.
+	if (!this->MirageDecoys && !this->MirageDisguise)
 		return false;
 
 	// Need at least one candidate TerrainType (own pool or vanilla fallback).
@@ -92,8 +87,8 @@ template <typename T>
 void TechnoTypeExt::ExtData::Serialize(T& Stm)
 {
 	Stm
-		.Process(this->MirageEnabled)
-		.Process(this->MirageMode)
+		.Process(this->MirageDecoys)
+		.Process(this->MirageDisguise)
 		.Process(this->MirageDefaultDisguises)
 		.Process(this->MirageAttackCursorOnDisguise)
 		.Process(this->MirageDistance)

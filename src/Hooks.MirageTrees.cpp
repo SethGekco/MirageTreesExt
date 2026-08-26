@@ -420,7 +420,7 @@ static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 
 	bool const shouldShow = TechnoExt::ShouldHaveMirage(pThis);
 
-	if (shouldShow && !pExt->MirageActive)
+	if (shouldShow && !pExt->MirageDisguiseActive)
 	{
 		auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
 			RulesClass::Instance->DefaultMirageDisguises);
@@ -435,17 +435,17 @@ static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		pThis->Disguise = pTree;                 // TerrainTypeClass* -> ObjectTypeClass*
 		pThis->DisguisedAsHouse = pThis->Owner;
 		pThis->Disguised = true;
-		pExt->MirageActive = true;
+		pExt->MirageDisguiseActive = true;
 		pThis->Mark(MarkType::ChangeRedraw);
 
 		Debug::Log("[MirageTreesExt] disguise ON %s as %s\n",
 			pThis->GetTechnoType()->ID, pTree->ID);
 	}
-	else if (!shouldShow && pExt->MirageActive)
+	else if (!shouldShow && pExt->MirageDisguiseActive)
 	{
 		pThis->Disguised = false;
 		pThis->Disguise = nullptr;
-		pExt->MirageActive = false;
+		pExt->MirageDisguiseActive = false;
 		pThis->Mark(MarkType::ChangeRedraw);
 	}
 }
@@ -453,6 +453,9 @@ static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 // ---------------------------------------------------------------------------
 // Per-frame driver
 // ---------------------------------------------------------------------------
+
+static void UpdateDecoyForest(TechnoClass* pThis, TechnoExt::ExtData* pExt,
+	TechnoTypeExt::ExtData* pTypeExt);
 
 void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 {
@@ -478,16 +481,23 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		}
 	}
 
-	// Route by mode: 1=disguise (techno renders as a tree itself), else 0=decoy
-	// (spawn separate tree objects, the default).
-	auto const pModeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-	if (pModeExt && pModeExt->MirageMode == 1)
-	{
-		UpdateMirageDisguise(pThis, pExt, pModeExt);
+	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+	if (!pTypeExt)
 		return;
-	}
 
-	// Fast reject: nothing to do and nothing laid down.
+	// The two effects are independent — run each if its toggle is on.
+	if (pTypeExt->MirageDisguise)
+		UpdateMirageDisguise(pThis, pExt, pTypeExt);
+
+	if (pTypeExt->MirageDecoys)
+		UpdateDecoyForest(pThis, pExt, pTypeExt);
+}
+
+// The decoy-forest half of the per-frame driver (spawn / tear down / animate).
+static void UpdateDecoyForest(TechnoClass* pThis, TechnoExt::ExtData* pExt,
+	TechnoTypeExt::ExtData* pTypeExt)
+{
+	// Nothing laid down yet: lay it when the techno settles.
 	if (!pExt->MirageActive)
 	{
 		if (TechnoExt::ShouldHaveMirage(pThis))
@@ -507,8 +517,7 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	// Animated fade styles (pulse, spawn fade-in) need their decoy cells
 	// repainted every frame — static terrain is otherwise drawn once and cached,
 	// which would freeze the animation. Cheap: a few cells per techno.
-	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-	if (pTypeExt && (pTypeExt->MirageFadeStyle == STY_PULSE || pTypeExt->MirageFadeStyle == STY_SPAWN))
+	if (pTypeExt->MirageFadeStyle == STY_PULSE || pTypeExt->MirageFadeStyle == STY_SPAWN)
 	{
 		for (auto const pTree : pExt->MirageTrees)
 		{
