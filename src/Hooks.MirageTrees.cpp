@@ -255,6 +255,41 @@ bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
 // Spawn / clear
 // ---------------------------------------------------------------------------
 
+// Place one tree on `cell` and wire it into all our tracking (fade registry,
+// logic layer, redraw). Returns true if a tree was placed.
+static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
+	TechnoTypeExt::ExtData* pTypeExt, CellStruct cell,
+	const std::vector<TerrainTypeClass*>& disguises)
+{
+	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
+	if (!pCell || pCell->GetTerrain(false) != nullptr) // off-map or already treed
+		return false;
+
+	auto& random = ScenarioClass::Instance->Random;
+	auto const pTerrainType = disguises[random.RandomRanged(0, static_cast<int>(disguises.size()) - 1)];
+	if (!pTerrainType)
+		return false;
+
+	auto const pTree = CreatePlacedTree(pTerrainType, cell);
+	if (!pTree)
+		return false;
+
+	pTree->Health = pTypeExt->MirageHealth > 0
+		? pTypeExt->MirageHealth.Get()
+		: pTerrainType->Strength;
+
+	pExt->MirageTrees.push_back(pTree);
+	DecoyRegistry[pTree] = DecoyInfo {
+		pThis->Owner,
+		pTypeExt->MirageFadeAudience, pTypeExt->MirageFadeStyle,
+		pTypeExt->MirageFadeOpacity, pTypeExt->MirageFadePulseRate,
+		Unsorted::CurrentFrame };
+	LogicClass::Instance.AddObject(pTree, false);
+	pTree->Mark(MarkType::ChangeRedraw);
+	DirtyDecoyArea(cell);
+	return true;
+}
+
 void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 {
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
@@ -267,97 +302,72 @@ void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 
 	auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
 		RulesClass::Instance->DefaultMirageDisguises);
-	int const poolSize = static_cast<int>(disguises.size());
-	if (poolSize <= 0)
+	if (disguises.empty())
 		return;
 
 	auto& random = ScenarioClass::Instance->Random;
-
 	CellStruct const anchor = pThis->GetMapCoords();
 
-	Debug::Log("[MirageTreesExt] Spawn %s at (%d,%d) pool=%d\n",
-		pThis->GetTechnoType()->ID, anchor.X, anchor.Y, poolSize);
-
-	// Count and per-tree spread bounds (X=min, Y=max).
-	int const countMin = pTypeExt->MirageCount.Get().X;
-	int const countMax = pTypeExt->MirageCount.Get().Y;
-	int const distMin = pTypeExt->MirageDistance.Get().X;
-	int const distMax = pTypeExt->MirageDistance.Get().Y;
-
-	int const count = random.RandomRanged(
-		std::min(countMin, countMax), std::max(countMin, countMax));
-
-	for (int i = 0; i < count; ++i)
+	// COVERING (disguise mode, non-units): put tree(s) directly ON the techno so
+	// it reads as a tree. Infantry = its own cell; buildings = footprint cells up
+	// to Mirage.Count. Units use the native field-based disguise instead.
+	bool const cover = pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit;
+	if (cover)
 	{
-		// Random spread within a box of the chosen radius (random center).
-		int const dist = random.RandomRanged(
-			std::min(distMin, distMax), std::max(distMin, distMax));
-		int const dx = dist > 0 ? random.RandomRanged(-dist, dist) : 0;
-		int const dy = dist > 0 ? random.RandomRanged(-dist, dist) : 0;
-
-		CellStruct const target { static_cast<short>(anchor.X + dx),
-								  static_cast<short>(anchor.Y + dy) };
-
-		// Never place a decoy on the techno's own cell.
-		if (target == anchor)
-			continue;
-
-		auto const pCell = MapClass::Instance.TryGetCellAt(target);
-		if (!pCell)
-			continue;
-
-		// Don't stack on an existing tree.
-		if (pCell->GetTerrain(false) != nullptr)
-			continue;
-
-		auto const pTerrainType = disguises[random.RandomRanged(0, poolSize - 1)];
-		if (!pTerrainType)
-			continue;
-
-		// RE-VERIFY #1: ctor @0x71BB90 is expected to place the tree on `target`
-		// and register it with the global TerrainClass::Array.
-		auto const pTree = CreatePlacedTree(pTerrainType, target);
-		if (!pTree)
+		if (pThis->WhatAmI() == AbstractType::Building)
 		{
-			Debug::Log("[MirageTreesExt]   alloc FAILED for %s at (%d,%d)\n",
-				pTerrainType->ID, target.X, target.Y);
-			continue;
+			int limit = std::max(pTypeExt->MirageCount.Get().X, pTypeExt->MirageCount.Get().Y);
+			if (limit <= 0)
+				limit = 64;
+			int placed = 0;
+			// Foundation data is a list of relative cell offsets, terminated by a
+			// {0x7FFF,...} sentinel. Cap iterations defensively.
+			if (auto pFound = pThis->GetFoundationData(false))
+			{
+				for (int guard = 0; guard < 64 && placed < limit
+					&& pFound->X != 0x7FFF && pFound->Y != 0x7FFF; ++pFound, ++guard)
+				{
+					CellStruct const c { static_cast<short>(anchor.X + pFound->X),
+										 static_cast<short>(anchor.Y + pFound->Y) };
+					if (PlaceMirageTree(pThis, pExt, pTypeExt, c, disguises))
+						++placed;
+				}
+			}
+			if (placed == 0) // 0-cell foundation fallback: cover the origin
+				PlaceMirageTree(pThis, pExt, pTypeExt, anchor, disguises);
 		}
-
-		// Mirage.Health: hitpoints per decoy (0 => the TerrainType's own).
-		int const health = pTypeExt->MirageHealth > 0
-			? pTypeExt->MirageHealth.Get()
-			: pTerrainType->Strength;
-		pTree->Health = health;
-
-		// RE-VERIFY #1 probe: did the ctor place the tree on the map + Array?
-		CellStruct const placed = pTree->GetMapCoords();
-		Debug::Log("[MirageTreesExt]   tree %s created@(%d,%d) placed@(%d,%d) "
-			"inArray=%d inLimbo=%d hp=%d\n",
-			pTerrainType->ID, target.X, target.Y, placed.X, placed.Y,
-			TerrainClass::Array.FindItemIndex(pTree) != -1, pTree->InLimbo, health);
-
-		pExt->MirageTrees.push_back(pTree);
-
-		// Register for fade rendering (owner + captured config).
-		DecoyRegistry[pTree] = DecoyInfo {
-			pThis->Owner,
-			pTypeExt->MirageFadeAudience, pTypeExt->MirageFadeStyle,
-			pTypeExt->MirageFadeOpacity, pTypeExt->MirageFadePulseRate,
-			Unsorted::CurrentFrame };
-
-		// Add to the logic layer so the engine treats it like animated terrain:
-		// it gets ticked and redrawn, which both integrates it into the normal
-		// draw pass and lets the fade animation actually repaint each frame.
-		LogicClass::Instance.AddObject(pTree, false);
-
-		// Paint the new decoy into the tactical view now. Static terrain is only
-		// repainted when its cell is dirty, so without this the tree doesn't
-		// appear until an incidental redraw or a manual scroll. Dirty the whole
-		// 3x3 block so the tree's overhang (not just its base cell) paints.
-		pTree->Mark(MarkType::ChangeRedraw);
-		DirtyDecoyArea(target);
+		else // infantry / aircraft
+		{
+			PlaceMirageTree(pThis, pExt, pTypeExt, anchor, disguises);
+		}
 	}
+
+	// SCATTER (decoy mode): random count/spread around the techno, never on its
+	// own cell.
+	if (pTypeExt->MirageDecoys)
+	{
+		int const countMin = pTypeExt->MirageCount.Get().X;
+		int const countMax = pTypeExt->MirageCount.Get().Y;
+		int const distMin = pTypeExt->MirageDistance.Get().X;
+		int const distMax = pTypeExt->MirageDistance.Get().Y;
+		int const count = random.RandomRanged(std::min(countMin, countMax), std::max(countMin, countMax));
+
+		for (int i = 0; i < count; ++i)
+		{
+			int const dist = random.RandomRanged(std::min(distMin, distMax), std::max(distMin, distMax));
+			int const dx = dist > 0 ? random.RandomRanged(-dist, dist) : 0;
+			int const dy = dist > 0 ? random.RandomRanged(-dist, dist) : 0;
+			CellStruct const target { static_cast<short>(anchor.X + dx),
+									  static_cast<short>(anchor.Y + dy) };
+			if (target == anchor)
+				continue;
+			PlaceMirageTree(pThis, pExt, pTypeExt, target, disguises);
+		}
+	}
+
+	Debug::Log("[MirageTreesExt] Spawn %s at (%d,%d): %d trees (cover=%d)\n",
+		pThis->GetTechnoType()->ID, anchor.X, anchor.Y,
+		static_cast<int>(pExt->MirageTrees.size()), cover);
 
 	pExt->MirageActive = true;
 	pExt->MirageAnchor = anchor;
@@ -492,11 +502,14 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (!pTypeExt)
 		return;
 
-	// The two effects are independent — run each if its toggle is on.
-	if (pTypeExt->MirageDisguise)
+	// Units self-disguise via the native field (renders as a real tree, safe).
+	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
 
-	if (pTypeExt->MirageDecoys)
+	// Trees: scattered decoys (Mirage.Decoys) and/or covering disguise for
+	// non-units (Mirage.Disguise) share the same spawn/clear machinery.
+	bool const coveringDisguise = pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit;
+	if (pTypeExt->MirageDecoys || coveringDisguise)
 		UpdateDecoyForest(pThis, pExt, pTypeExt);
 }
 
