@@ -582,7 +582,12 @@ DEFINE_HOOK(0x71C2DC, TerrainClass_Draw_MirageBlit, 0x6)
 	if (CurrentDecoyBlit != BlitterFlags::None)
 	{
 		GET(DWORD, flags, ESI);
-		R->ESI(flags | static_cast<DWORD>(CurrentDecoyBlit));
+		// Add our translucency AND drop the base Alpha flag (0x800): a per-pixel
+		// alpha-lighting pass combined with a translucency level renders parts of
+		// the tree wrong ("top-right quarter covered by the cell behind"). Only
+		// the faded (owner) trees hit this path; solid trees are untouched.
+		R->ESI((flags & ~static_cast<DWORD>(BlitterFlags::Alpha))
+			| static_cast<DWORD>(CurrentDecoyBlit));
 	}
 	return 0;
 }
