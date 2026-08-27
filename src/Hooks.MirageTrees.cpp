@@ -256,10 +256,13 @@ bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
 // ---------------------------------------------------------------------------
 
 // Place one tree on `cell` and wire it into all our tracking (fade registry,
-// logic layer, redraw). Returns true if a tree was placed.
+// logic layer, redraw). Returns true if a tree was placed. Templated on the
+// disguise container because GetElements() yields a Phobos Iterator, not a
+// std::vector.
+template <typename TDisguises>
 static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	TechnoTypeExt::ExtData* pTypeExt, CellStruct cell,
-	const std::vector<TerrainTypeClass*>& disguises)
+	const TDisguises& disguises)
 {
 	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
 	if (!pCell || pCell->GetTerrain(false) != nullptr) // off-map or already treed
