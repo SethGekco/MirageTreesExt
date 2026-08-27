@@ -514,6 +514,22 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	bool const coveringDisguise = pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit;
 	if (pTypeExt->MirageDecoys || coveringDisguise)
 		UpdateDecoyForest(pThis, pExt, pTypeExt);
+
+	// Phase 1 disguise: cloak the techno while disguised so ENEMIES can't see it
+	// (they see only the tree). The engine's cloak natively handles sensor/detector
+	// reveal and reveal-on-fire — the exposure behavior we want. Owner sees the
+	// cloak shimmer + tree for now (per-observer render is a later phase).
+	if (coveringDisguise)
+	{
+		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis);
+		pThis->Cloakable = shouldDisguise; // only self-cloak while disguising
+
+		if (shouldDisguise && pThis->CloakState == CloakState::Uncloaked)
+			pThis->Cloak(false);
+		else if (!shouldDisguise
+			&& (pThis->CloakState == CloakState::Cloaked || pThis->CloakState == CloakState::Cloaking))
+			pThis->Uncloak(false);
+	}
 }
 
 // The decoy-forest half of the per-frame driver (spawn / tear down / animate).
