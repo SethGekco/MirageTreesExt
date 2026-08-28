@@ -83,11 +83,14 @@ namespace
 
 	// A tree's SHP overhangs its own cell (foliage draws upward on screen), so
 	// dirtying only its cell repaints just part of it — leaving "half the image"
-	// stale and ghosts when it is removed. Dirty a 3x3 block around it instead.
-	void DirtyDecoyArea(CellStruct center)
+	// stale and ghosts (a lingering tree-top) when it is removed. Dirty a block
+	// around it. radius 1 (3x3) suffices for spawn/animation; removal uses a
+	// larger radius so the tall foliage overhang is fully cleared, not just a
+	// sliver left behind.
+	void DirtyDecoyArea(CellStruct center, int radius = 1)
 	{
-		for (int dy = -1; dy <= 1; ++dy)
-			for (int dx = -1; dx <= 1; ++dx)
+		for (int dy = -radius; dy <= radius; ++dy)
+			for (int dx = -radius; dx <= radius; ++dx)
 			{
 				CellStruct const c { static_cast<short>(center.X + dx),
 									 static_cast<short>(center.Y + dy) };
@@ -111,7 +114,7 @@ namespace
 			LogicClass::Instance.RemoveObject(pTree);
 			pTree->Limbo();
 			GameDelete(pTree);
-			DirtyDecoyArea(cell);
+			DirtyDecoyArea(cell, 2); // larger: clear the tall foliage overhang
 		}
 		PendingDecoyDeletes.clear();
 	}
@@ -408,7 +411,7 @@ void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt, bool deferDelete)
 		LogicClass::Instance.RemoveObject(pTree);
 		pTree->Limbo();
 		GameDelete(pTree);
-		DirtyDecoyArea(cell);
+		DirtyDecoyArea(cell, 2); // larger: clear the tall foliage overhang
 	}
 
 	pExt->MirageTrees.clear();
@@ -515,21 +518,11 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDecoys || coveringDisguise)
 		UpdateDecoyForest(pThis, pExt, pTypeExt);
 
-	// Phase 1 disguise: cloak the techno while disguised so ENEMIES can't see it
-	// (they see only the tree). The engine's cloak natively handles sensor/detector
-	// reveal and reveal-on-fire — the exposure behavior we want. Owner sees the
-	// cloak shimmer + tree for now (per-observer render is a later phase).
+	// Render-swap disguise (non-units): flag whether the techno should currently
+	// be hidden from enemies (still + eligible). The draw hook reads this. The
+	// covering tree (placed above) is what the enemy then sees in its place.
 	if (coveringDisguise)
-	{
-		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis);
-		pThis->Cloakable = shouldDisguise; // only self-cloak while disguising
-
-		if (shouldDisguise && pThis->CloakState == CloakState::Uncloaked)
-			pThis->Cloak(false);
-		else if (!shouldDisguise
-			&& (pThis->CloakState == CloakState::Cloaked || pThis->CloakState == CloakState::Cloaking))
-			pThis->Uncloak(false);
-	}
+		pExt->MirageDisguiseActive = TechnoExt::ShouldHaveMirage(pThis);
 }
 
 // The decoy-forest half of the per-frame driver (spawn / tear down / animate).
@@ -589,6 +582,45 @@ DEFINE_HOOK(0x43FE69, BuildingClass_AI_MirageTrees, 0xA)
 {
 	GET(BuildingClass* const, pThis, ESI);
 	TechnoExt::UpdateMirageTrees(pThis);
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Render-swap disguise — hide the techno's own art from ENEMY viewers so they
+// see only the tree on its cell. Pure visual (unlike cloak): the techno stays
+// fully functional — fires, is targetable — because TechnoClass::DrawObject is
+// rendering-only. This is how vanilla mirage works (a draw swap), without the
+// cloak side effects (can't-fire-while-cloaked, targeting/perf problems).
+//
+// 0x705E00 = TechnoClass::DrawObject(this=ECX, arg1); hook after the prologue
+// (ESI=this) and, for a disguised techno viewed by an enemy, redirect to the
+// function's clean epilogue at 0x706602 (pop regs; add esp,0x44; ret 0x40) to
+// skip the whole draw. Owner/allies fall through and see it normally.
+// ---------------------------------------------------------------------------
+
+static bool MirageHiddenFromViewer(TechnoClass* pThis)
+{
+	// Units use the native field disguise (they draw their own tree); don't skip.
+	if (pThis->WhatAmI() == AbstractType::Unit)
+		return false;
+
+	auto const pExt = TechnoExt::ExtMap.Find(pThis);
+	if (!pExt || !pExt->MirageDisguiseActive)
+		return false;
+
+	auto const pObserver = HouseClass::CurrentPlayer;
+	if (!pObserver || !pThis->Owner)
+		return false;
+
+	// Owner and allies see the real techno; everyone else sees the tree instead.
+	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
+}
+
+DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
+{
+	GET(TechnoClass*, pThis, ESI);
+	if (MirageHiddenFromViewer(pThis))
+		return 0x706602; // skip the entire draw for this enemy viewer
 	return 0;
 }
 
