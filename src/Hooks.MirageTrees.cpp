@@ -292,7 +292,7 @@ static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		Unsorted::CurrentFrame };
 	LogicClass::Instance.AddObject(pTree, false);
 	pTree->Mark(MarkType::ChangeRedraw);
-	DirtyDecoyArea(cell);
+	DirtyDecoyArea(cell, 2); // larger: paint the full tree incl. tall overhang
 	return true;
 }
 
@@ -555,9 +555,9 @@ static void UpdateDecoyForest(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		{
 			if (!pTree || TerrainClass::Array.FindItemIndex(pTree) == -1)
 				continue;
-			// Dirty the whole 3x3 block so the tree's overhang repaints, not just
-			// its base cell (which left "half the image" stale).
-			DirtyDecoyArea(pTree->GetMapCoords());
+			// Dirty a block so the tree's tall overhang repaints, not just its
+			// base cell (which left "half the image" stale).
+			DirtyDecoyArea(pTree->GetMapCoords(), 2);
 		}
 	}
 }
@@ -621,6 +621,21 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	GET(TechnoClass*, pThis, ESI);
 	if (MirageHiddenFromViewer(pThis))
 		return 0x706602; // skip the entire draw for this enemy viewer
+	return 0;
+}
+
+// The chevrons/pips/health-bar are drawn in a SEPARATE pass (DrawExtras), which
+// the DrawObject skip above misses — enemies could still see the veterancy
+// chevron over an "invisible" disguised unit. Skip DrawExtras too.
+// 0x6F5190 = TechnoClass::DrawExtras(this=ECX->EBP); hook after its prologue
+// (EBP=this) and, for a hidden techno, jump to its clean epilogue 0x6F5EE3
+// (pop edi/esi/ebp; add esp,0x8c; ret 8) — the same exit the game's own early
+// check uses.
+DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
+{
+	GET(TechnoClass*, pThis, EBP);
+	if (MirageHiddenFromViewer(pThis))
+		return 0x6F5EE3; // skip chevrons/pips/health bar for this enemy viewer
 	return 0;
 }
 
