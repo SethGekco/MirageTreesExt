@@ -512,17 +512,36 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
 
-	// Trees: scattered decoys (Mirage.Decoys) and/or covering disguise for
-	// non-units (Mirage.Disguise) share the same spawn/clear machinery.
-	bool const coveringDisguise = pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit;
-	if (pTypeExt->MirageDecoys || coveringDisguise)
-		UpdateDecoyForest(pThis, pExt, pTypeExt);
+	// Non-unit disguise = render-swap by reusing the vanilla mirage. Pick a tree
+	// when it activates and flag it; the draw hooks temporarily borrow it into
+	// TechnoClass::Disguise so the engine renders the tree (enemy) / real unit
+	// (owner). No separate tree object.
+	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
+	{
+		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis);
+		if (shouldDisguise && !pExt->MirageDisguiseActive)
+		{
+			auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
+				RulesClass::Instance->DefaultMirageDisguises);
+			if (disguises.size() > 0)
+			{
+				pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
+					0, static_cast<int>(disguises.size()) - 1)];
+				pExt->MirageDisguiseActive = true;
+				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
+			}
+		}
+		else if (!shouldDisguise && pExt->MirageDisguiseActive)
+		{
+			pExt->MirageDisguiseActive = false;
+			pExt->MirageDisguiseTree = nullptr;
+			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
+		}
+	}
 
-	// Render-swap disguise (non-units): flag whether the techno should currently
-	// be hidden from enemies (still + eligible). The draw hook reads this. The
-	// covering tree (placed above) is what the enemy then sees in its place.
-	if (coveringDisguise)
-		pExt->MirageDisguiseActive = TechnoExt::ShouldHaveMirage(pThis);
+	// Decoys: separate scattered tree objects (unchanged, independent).
+	if (pTypeExt->MirageDecoys)
+		UpdateDecoyForest(pThis, pExt, pTypeExt);
 }
 
 // The decoy-forest half of the per-frame driver (spawn / tear down / animate).
@@ -600,7 +619,6 @@ DEFINE_HOOK(0x43FE69, BuildingClass_AI_MirageTrees, 0xA)
 
 static bool MirageHiddenFromViewer(TechnoClass* pThis)
 {
-	// Units use the native field disguise (they draw their own tree); don't skip.
 	if (pThis->WhatAmI() == AbstractType::Unit)
 		return false;
 
@@ -616,26 +634,65 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
 }
 
-DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
+// Borrow the vanilla mirage render: set the techno's Disguise to its chosen tree
+// ONLY across the draw call, so the engine's own mirage code draws it (tree for
+// enemies, real unit for the owner via IsClearlyVisibleTo), then restore before
+// any combat code runs — a persistently-set TerrainType Disguise crashes
+// InfantryClass::ReceiveDamage. DrawObject has a single exit, so restore is
+// reliable. Units use the native field disguise, not this.
+namespace
+{
+	struct MirageBorrowState { TechnoClass* Techno; ObjectTypeClass* Disguise; HouseClass* House; bool Disguised; };
+	MirageBorrowState MirageBorrow {};
+
+	void BeginMirageBorrow(TechnoClass* pThis)
+	{
+		if (pThis->WhatAmI() == AbstractType::Unit)
+			return;
+		auto const pExt = TechnoExt::ExtMap.Find(pThis);
+		if (!pExt || !pExt->MirageDisguiseActive || !pExt->MirageDisguiseTree)
+			return;
+
+		MirageBorrow = { pThis, pThis->Disguise, pThis->DisguisedAsHouse, pThis->Disguised };
+		pThis->Disguise = pExt->MirageDisguiseTree; // TerrainTypeClass* -> ObjectTypeClass*
+		pThis->DisguisedAsHouse = pThis->Owner;
+		pThis->Disguised = true;
+	}
+
+	void EndMirageBorrow()
+	{
+		if (!MirageBorrow.Techno)
+			return;
+		MirageBorrow.Techno->Disguise = MirageBorrow.Disguise;
+		MirageBorrow.Techno->DisguisedAsHouse = MirageBorrow.House;
+		MirageBorrow.Techno->Disguised = MirageBorrow.Disguised;
+		MirageBorrow.Techno = nullptr;
+	}
+}
+
+// TechnoClass::DrawObject (0x705E00): borrow the disguise across the draw, restore
+// at its single epilogue (0x706602).
+DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageBorrow_Begin, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
-	if (MirageHiddenFromViewer(pThis))
-		return 0x706602; // skip the entire draw for this enemy viewer
+	BeginMirageBorrow(pThis);
 	return 0;
 }
 
-// The chevrons/pips/health-bar are drawn in a SEPARATE pass (DrawExtras), which
-// the DrawObject skip above misses — enemies could still see the veterancy
-// chevron over an "invisible" disguised unit. Skip DrawExtras too.
-// 0x6F5190 = TechnoClass::DrawExtras(this=ECX->EBP); hook after its prologue
-// (EBP=this) and, for a hidden techno, jump to its clean epilogue 0x6F5EE3
-// (pop edi/esi/ebp; add esp,0x8c; ret 8) — the same exit the game's own early
-// check uses.
+DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageBorrow_End, 0x6)
+{
+	EndMirageBorrow();
+	return 0;
+}
+
+// The chevrons/pips/health bar draw in a separate pass (TechnoClass::DrawExtras,
+// 0x6F5190) after DrawObject — with the borrow already restored — so hide them for
+// enemy viewers by skipping to its clean epilogue 0x6F5EE3. Owner sees them.
 DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
 {
 	GET(TechnoClass*, pThis, EBP);
 	if (MirageHiddenFromViewer(pThis))
-		return 0x6F5EE3; // skip chevrons/pips/health bar for this enemy viewer
+		return 0x6F5EE3;
 	return 0;
 }
 
