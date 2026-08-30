@@ -38,11 +38,6 @@ public:
 		// separately from MirageActive so both effects can be on at once.
 		bool MirageDisguiseActive;
 
-		// The tree the techno is currently disguised as (render-swap disguise).
-		// Chosen once when the disguise activates; the draw hooks temporarily set
-		// TechnoClass::Disguise to this so the vanilla mirage code renders it.
-		TerrainTypeClass* MirageDisguiseTree;
-
 		// Cell the techno occupied when the forest was laid, so we can detect
 		// that it has moved and tear the forest down.
 		CellStruct MirageAnchor;
@@ -54,7 +49,6 @@ public:
 			, MirageTrees {}
 			, MirageActive { false }
 			, MirageDisguiseActive { false }
-			, MirageDisguiseTree { nullptr }
 			, MirageAnchor {}
 			, MirageDiagLogged { false }
 		{ }
