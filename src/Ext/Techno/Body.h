@@ -38,6 +38,11 @@ public:
 		// separately from MirageActive so both effects can be on at once.
 		bool MirageDisguiseActive;
 
+		// The tree the techno is currently disguised as (pure render morph). Chosen
+		// once when the disguise activates; the draw hook renders this TerrainType's
+		// sprite in the techno's place for enemy viewers.
+		TerrainTypeClass* MirageDisguiseTree;
+
 		// Cell the techno occupied when the forest was laid, so we can detect
 		// that it has moved and tear the forest down.
 		CellStruct MirageAnchor;
@@ -49,6 +54,7 @@ public:
 			, MirageTrees {}
 			, MirageActive { false }
 			, MirageDisguiseActive { false }
+			, MirageDisguiseTree { nullptr }
 			, MirageAnchor {}
 			, MirageDiagLogged { false }
 		{ }

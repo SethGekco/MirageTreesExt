@@ -34,6 +34,8 @@
 #include <Unsorted.h>
 #include <Fundamentals.h>
 #include <Memory.h>
+#include <Surface.h>
+#include <TacticalClass.h>
 
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
@@ -512,17 +514,35 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
 
-	// Trees: scattered decoys (Mirage.Decoys) and/or covering disguise for
-	// non-units (Mirage.Disguise) share the same spawn/clear machinery.
-	bool const coveringDisguise = pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit;
-	if (pTypeExt->MirageDecoys || coveringDisguise)
-		UpdateDecoyForest(pThis, pExt, pTypeExt);
+	// Non-unit disguise = PURE MORPH: no separate tree object. Pick a tree when it
+	// activates and flag it; the draw hook renders that TerrainType's sprite in the
+	// techno's place for enemy viewers (and skips the techno's own draw).
+	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
+	{
+		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis);
+		if (shouldDisguise && !pExt->MirageDisguiseActive)
+		{
+			auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
+				RulesClass::Instance->DefaultMirageDisguises);
+			if (disguises.size() > 0)
+			{
+				pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
+					0, static_cast<int>(disguises.size()) - 1)];
+				pExt->MirageDisguiseActive = true;
+				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
+			}
+		}
+		else if (!shouldDisguise && pExt->MirageDisguiseActive)
+		{
+			pExt->MirageDisguiseActive = false;
+			pExt->MirageDisguiseTree = nullptr;
+			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
+		}
+	}
 
-	// Render-swap disguise (non-units): flag whether the techno should currently
-	// be hidden from enemies (still + eligible). The draw hook reads this. The
-	// covering tree (placed above) is what the enemy then sees in its place.
-	if (coveringDisguise)
-		pExt->MirageDisguiseActive = TechnoExt::ShouldHaveMirage(pThis);
+	// Decoys: separate scattered tree objects (independent of disguise).
+	if (pTypeExt->MirageDecoys)
+		UpdateDecoyForest(pThis, pExt, pTypeExt);
 }
 
 // The decoy-forest half of the per-frame driver (spawn / tear down / animate).
@@ -616,11 +636,47 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
 }
 
+// PURE MORPH: render the chosen tree's sprite at the techno's position, matching
+// how the game draws a real tree — DSurface::Temp, the cell's LightConvert palette,
+// centered SHP with the terrain blit flags. Then the caller skips the techno's own
+// draw so the enemy sees only the tree. (First cut — palette/frame/depth/offset may
+// need tuning.)
+static void DrawMirageTree(TechnoClass* pThis)
+{
+	auto const pExt = TechnoExt::ExtMap.Find(pThis);
+	if (!pExt || !pExt->MirageDisguiseTree)
+		return;
+
+	auto const pImage = pExt->MirageDisguiseTree->GetImage();
+	if (!pImage)
+		return;
+
+	auto const pCell = pThis->GetCell();
+	if (!pCell)
+		return;
+
+	auto const client = TacticalClass::Instance->CoordsToClient(pThis->GetCoords());
+	if (!client.second)
+		return; // off-screen
+
+	Point2D pos = client.first;
+	RectangleStruct bounds = DSurface::Temp->GetRect();
+
+	// Match the vanilla tree draw: cell palette + terrain blit flags, ground Z.
+	DSurface::Temp->DrawSHP(
+		reinterpret_cast<ConvertClass*>(pCell->LightConvert), pImage, /*frame*/ 0,
+		&pos, &bounds, static_cast<BlitterFlags>(0x4E00), 0, 0,
+		ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+}
+
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
 	if (MirageHiddenFromViewer(pThis))
-		return 0x706602; // skip the entire draw for this enemy viewer
+	{
+		DrawMirageTree(pThis);   // draw the tree in its place
+		return 0x706602;         // skip the techno's own draw for this enemy viewer
+	}
 	return 0;
 }
 
