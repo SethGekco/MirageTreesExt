@@ -36,6 +36,7 @@
 #include <Memory.h>
 #include <Surface.h>
 #include <TacticalClass.h>
+#include <FileSystem.h>
 
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
@@ -644,28 +645,35 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 static void DrawMirageTree(TechnoClass* pThis)
 {
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
-	if (!pExt || !pExt->MirageDisguiseTree)
-		return;
-
-	auto const pImage = pExt->MirageDisguiseTree->GetImage();
-	if (!pImage)
-		return;
-
+	auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
+	auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
 	auto const pCell = pThis->GetCell();
-	if (!pCell)
-		return;
-
 	auto const client = TacticalClass::Instance->CoordsToClient(pThis->GetCoords());
-	if (!client.second)
-		return; // off-screen
+	auto const pPalette = pCell && pCell->LightConvert
+		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+		: FileSystem::UNITx_PAL; // fallback so a null cell palette can't blank it
+
+	// Throttled diagnostic (once/frame) to see why the sprite may not blit.
+	static int lastLog = -1;
+	if (lastLog != Unsorted::CurrentFrame)
+	{
+		lastLog = Unsorted::CurrentFrame;
+		Debug::Log("[MirageTreesExt] morph %s tree=%p img=%p cell=%p pal=%p onscreen=%d pos=(%d,%d)\n",
+			pThis->GetTechnoType()->ID, (void*)pTreeType, (void*)pImage, (void*)pCell,
+			(void*)pPalette, client.second, client.first.X, client.first.Y);
+	}
+
+	if (!pImage || !client.second)
+		return;
 
 	Point2D pos = client.first;
 	RectangleStruct bounds = DSurface::Temp->GetRect();
 
-	// Match the vanilla tree draw: cell palette + terrain blit flags, ground Z.
+	// Iter 2: drop ZReadWrite (0x4000) so a bad Z can't cull the sprite — force it
+	// visible first, then re-add proper depth. Centered + bf_400.
 	DSurface::Temp->DrawSHP(
-		reinterpret_cast<ConvertClass*>(pCell->LightConvert), pImage, /*frame*/ 0,
-		&pos, &bounds, static_cast<BlitterFlags>(0x4E00), 0, 0,
+		pPalette, pImage, /*frame*/ 0,
+		&pos, &bounds, static_cast<BlitterFlags>(0x0600), 0, 0,
 		ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
 }
 
