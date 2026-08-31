@@ -663,18 +663,25 @@ static void DrawMirageTree(TechnoClass* pThis)
 			(void*)pPalette, client.second, client.first.X, client.first.Y);
 	}
 
-	if (!pImage || !client.second)
+	if (!pImage)
 		return;
 
-	Point2D pos = client.first;
-	RectangleStruct bounds = DSurface::Temp->GetRect();
+	// Explicit generous bounds in case GetRect() is off.
+	RectangleStruct bounds { 0, 0, 4000, 3000 };
 
-	// Iter 2: drop ZReadWrite (0x4000) so a bad Z can't cull the sprite — force it
-	// visible first, then re-add proper depth. Centered + bf_400.
-	DSurface::Temp->DrawSHP(
-		pPalette, pImage, /*frame*/ 0,
-		&pos, &bounds, static_cast<BlitterFlags>(0x0600), 0, 0,
-		ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+	// PROBE: draw one copy at a FIXED on-screen spot to prove the blit works at
+	// all, independent of the techno's position/Z.
+	Point2D probe { 200, 200 };
+	DSurface::Temp->DrawSHP(pPalette, pImage, 0, &probe, &bounds,
+		static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+
+	// The real one at the techno's position.
+	if (client.second)
+	{
+		Point2D pos = client.first;
+		DSurface::Temp->DrawSHP(pPalette, pImage, 0, &pos, &bounds,
+			static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+	}
 }
 
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
