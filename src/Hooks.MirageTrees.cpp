@@ -290,10 +290,14 @@ DEFINE_HOOK(0x6FDD50, TechnoClass_Fire_MirageBlink, 0x6)
 	GET_STACK(AbstractClass*, pTargetAbs, 0x4); // Fire(target, weaponIdx): arg1 = target
 
 	// Our own disguised unit firing → drop its disguise briefly (muzzle blink).
+	// Buildings are excluded: a defensive structure fires constantly, so a per-shot
+	// reveal just makes it flicker between tree and structure instead of staying a
+	// steady tree. Stationary structures keep the disguise up while they fire.
 	if (auto const pExt = TechnoExt::ExtMap.Find(pThis))
 	{
 		auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0)
+		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0
+			&& pThis->WhatAmI() != AbstractType::Building)
 			pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
 	}
 
@@ -596,7 +600,8 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	// times a second; blinking per-shot re-added the disguise between shots and
 	// flickered constantly. Latching on Target means it stays exposed through the
 	// whole engagement and re-disguises BlinkOnFire frames after the target drops.
-	if (pTypeExt->MirageBlinkOnFire > 0 && pThis->Target)
+	if (pTypeExt->MirageBlinkOnFire > 0 && pThis->Target
+		&& pThis->WhatAmI() != AbstractType::Building)
 		pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
 
 	// Units self-disguise via the native field (renders as a real tree, safe).
