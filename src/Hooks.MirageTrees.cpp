@@ -881,6 +881,22 @@ DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
 DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 {
 	GET(TerrainClass*, pThis, ESI);
+
+	// Only OUR decoys are in the registry; real map trees fall straight through.
+	if (DecoyRegistry.find(pThis) != DecoyRegistry.end())
+	{
+		// Don't render a decoy in a cell the current viewer can't actually see.
+		// Decoys are real TerrainClass objects, so without this they draw through
+		// black shroud, gap-generator shroud, and grey fog (and linger as ghosts
+		// after an area re-shrouds). Rendering only where there is live vision keeps
+		// them from appearing at the enemy's base / over the shroud. Redirect to the
+		// draw's own epilogue (0x71C353: pop edi/esi/ebp/ebx; add esp,0x14; ret 8) —
+		// the stack here is exactly that frame, so this cleanly skips tree + shadow.
+		auto const pCell = pThis->GetCell();
+		if (!pCell || pCell->IsShrouded() || pCell->IsFogged())
+			return 0x71C353;
+	}
+
 	CurrentDecoyBlit = ComputeDecoyBlit(pThis);
 	return 0;
 }
