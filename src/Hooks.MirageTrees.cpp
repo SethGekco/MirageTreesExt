@@ -278,8 +278,6 @@ static bool MirageRevealed(TechnoExt::ExtData* pExt)
 	return pExt && pExt->MirageRevealTimer > 0;
 }
 
-static void LogMirageDiag(TechnoClass* pThis); // TEMP diagnostic (defined below)
-
 // Blink-on-fire: when a disguised techno fires, drop its disguise for a short
 // window so it briefly reveals to enemies (auto-target + hover name), matching a
 // real mirage tank's muzzle blink. The disguise driver counts the timer down and
@@ -504,7 +502,6 @@ static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		pThis->DisguisedAsHouse = pThis->Owner;
 		pThis->Disguised = true;
 		pExt->MirageDisguiseActive = true;
-		LogMirageDiag(pThis); // TEMP diagnostic
 		pThis->Mark(MarkType::ChangeRedraw);
 
 		Debug::Log("[MirageTreesExt] disguise ON %s as %s\n",
@@ -571,6 +568,14 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	else
 		pExt->MirageStillFrames = 0;
 
+	// Keep the disguise dropped for as long as the unit holds a target, not just
+	// for one blink per shot. A defensive structure (e.g. a pillbox) fires many
+	// times a second; blinking per-shot re-added the disguise between shots and
+	// flickered constantly. Latching on Target means it stays exposed through the
+	// whole engagement and re-disguises BlinkOnFire frames after the target drops.
+	if (pTypeExt->MirageBlinkOnFire > 0 && pThis->Target)
+		pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
+
 	// Units self-disguise via the native field (renders as a real tree, safe).
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
@@ -596,7 +601,6 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			if (pExt->MirageDisguiseTree)
 			{
 				pExt->MirageDisguiseActive = true;
-				LogMirageDiag(pThis); // TEMP diagnostic
 				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
 			}
 		}
@@ -723,59 +727,6 @@ DEFINE_HOOK(0x4ABC31, DisplayClass_SetAction_MirageTooltip, 0xA)
 	return 0;
 }
 
-// ===========================================================================
-// TEMPORARY DIAGNOSTIC (cursor-on-disguise): why does hovering a disguised
-// infantry give the "can't move here" cursor instead of the attack cursor?
-// The object-under-cursor pick (0x6DA380) returns the hovered object in EAX at
-// its shared epilogue 0x6DA501 (both the found-in-list path via jne 0x6DA501 and
-// the cell-occupier fallback converge here). Log what it returns, classified,
-// only when it changes (keeps the spam down). Correlate the pointers with the
-// [MirageDiag] lines below.
-// ===========================================================================
-DEFINE_HOOK(0x6DA501, MirageTrees_CursorPickDiag, 0x6)
-{
-	GET(void*, pResult, EAX);
-	static void* s_last = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
-	if (pResult == s_last)
-		return 0;
-	s_last = pResult;
-
-	if (!pResult)
-	{
-		Debug::Log("[MiragePick] cursor object = NULL (falls through to cell/move cursor)\n");
-		return 0;
-	}
-
-	auto const pTechno = static_cast<TechnoClass*>(pResult);
-	if (auto const pExt = TechnoExt::ExtMap.Find(pTechno)) // safe on any pointer (hash only)
-	{
-		auto const pType = pTechno->GetTechnoType();
-		Debug::Log("[MiragePick] cursor object = %p techno %s%s\n", pResult,
-			pType ? pType->ID : "?",
-			pExt->MirageDisguiseActive ? "  <-- OUR DISGUISED UNIT" : "");
-	}
-	else
-	{
-		Debug::Log("[MiragePick] cursor object = %p (non-techno / not ours)\n", pResult);
-	}
-	return 0;
-}
-
-// Dump the pick-relevant state of a unit as its disguise engages, so we can see
-// whether it would be registered for selection and whether it owns its cell.
-static void LogMirageDiag(TechnoClass* pThis)
-{
-	auto const raw = reinterpret_cast<unsigned char*>(pThis);
-	auto const pCell = pThis->GetCell();
-	void* cellOcc = pCell
-		? *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(pCell) + 0xE4)
-		: nullptr;
-	Debug::Log("[MirageDiag] disguise ON %s ptr=%p WhatAmI=%d guard[+0x90]=%d "
-		"guard[+0x74]=%d cellOccupier(+0xE4)=%p isSelf=%d\n",
-		pThis->GetTechnoType()->ID, pThis, static_cast<int>(pThis->WhatAmI()),
-		raw[0x90], raw[0x74], cellOcc, cellOcc == static_cast<void*>(pThis));
-}
-
 // PURE MORPH: render the chosen tree's sprite at the techno's position, matching
 // how the game draws a real tree — DSurface::Temp, the cell's LightConvert palette,
 // centered SHP with the terrain blit flags. Then the caller skips the techno's own
@@ -803,9 +754,11 @@ static void DrawMirageTree(TechnoClass* pThis)
 		return;
 
 	auto const pCell = pThis->GetCell();
-	// Don't paint the tree in cells the viewer hasn't revealed — otherwise the
-	// on-top post-pass shows it through the shroud.
-	if (!pCell || pCell->IsShrouded())
+	// Don't paint the tree in cells the viewer can't currently see. The tree draws
+	// in an on-top post-pass (after the object layers), so without this it shows
+	// through both black shroud AND grey fog-of-war — a bright tree floating over
+	// unexplored/fogged ground. Skip both states.
+	if (!pCell || pCell->IsShrouded() || pCell->IsFogged())
 		return;
 
 	auto const pPalette = pCell->LightConvert
