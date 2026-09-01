@@ -687,6 +687,34 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	return 0;
 }
 
+// Make a disguised techno non-targetable by ENEMY auto-acquisition, like a real
+// mirage (and like the decoy trees, which aren't targetable) — so the enemy can't
+// pick the real unit out. TechnoClass::EvaluateObject (0x6F7CA0, __thiscall):
+// EDI = the scanning techno, [esp+0x4C] = the candidate (arg4). When the candidate
+// is one of our disguised units and the scanner is an enemy (not owner/allied),
+// jump to the function's own reject exit 0x6F894F (returns AL=0 = "no target").
+// Owner/allies fall through and target it normally. Verified in Ghidra.
+DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x4)
+{
+	GET(TechnoClass*, pScanner, EDI);
+	GET_STACK(TechnoClass*, pCandidate, 0x4C);
+
+	if (!pCandidate || !pScanner)
+		return 0;
+
+	auto const pExt = TechnoExt::ExtMap.Find(pCandidate);
+	if (!pExt || !pExt->MirageDisguiseActive)
+		return 0; // not one of our disguised units
+
+	auto const pScanHouse = pScanner->Owner;
+	auto const pCandHouse = pCandidate->Owner;
+	if (!pScanHouse || !pCandHouse || pScanHouse == pCandHouse
+		|| pScanHouse->IsAlliedWith(pCandHouse))
+		return 0; // owner/allies target it normally
+
+	return 0x6F894F; // enemy: the disguised unit is not a valid target
+}
+
 // Flush queued disguise trees AFTER the tactical object layers are rendered
 // (0x6D95AF = right after the 5-layer render loop, before overlays), so the
 // sprites are painted on top of the objects instead of being overdrawn.
