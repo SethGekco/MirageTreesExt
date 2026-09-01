@@ -64,8 +64,11 @@ HOOK_RE = re.compile(
     r'\bDEFINE_HOOK(?:_AGAIN)?\s*\(\s*(0x[0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*'
     r'(0x[0-9A-Fa-f]+|\d+)\s*\)'
 )
-# An explicit, reviewed waiver for a sub-5-byte hook.
-WAIVER_RE = re.compile(r'syringe-size-ok\s*:\s*(.*)')
+# An explicit, reviewed waiver. Suppresses ALL three defect classes, because the
+# only thing that can clear them is a human having checked reachability — see
+# 0x4F8361, where the patch really does clobber a jump table, but the table is
+# unreachable because Antares owns the function's only entry.
+WAIVER_RE = re.compile(r'syringe-(?:size|hook)-ok\s*:\s*(.*)')
 RETURN_RE = re.compile(r'\breturn\b([^;]*);')
 ENUM_RE = re.compile(r'\benum\b[^{]*\{([^}]*)\}')
 TOKEN_RE = re.compile(r'0[xX][0-9A-Fa-f]+|\b\d+\b|\b[A-Za-z_]\w*\b')
@@ -305,6 +308,12 @@ def check_bounds(hooks, exe_path):
     data, secs = load_text(exe_path)
     problems, latent, checked = [], [], 0
     for h in hooks:
+        if h['waiver']:
+            latent.append(
+                "0x{addr:06X} size {size} {name}   [WAIVED]\n"
+                "      {where}\n"
+                "      {waiver}".format(**h))
+            continue
         want = resume_addr(h['addr'], h['size'])
         window = (want - h['addr']) + 24
         code = read_va(data, secs, h['addr'], window)
@@ -395,9 +404,8 @@ def main():
         print(f'\ncheck_hook_bounds: boundary-checked {checked} hooks against '
               f'{args.exe}')
         if latent:
-            print('\nBad resume address, but UNREACHABLE (handler always returns '
-                  'a jump target).\nNot a live bug — but it becomes one the '
-                  'moment someone adds a `return 0`:\n')
+            print('\nKnown and reviewed — not failing the build, but re-check '
+                  'these whenever the\nsurrounding framework changes:\n')
             for p in latent:
                 print(f'  {p}')
         if bound_problems:
