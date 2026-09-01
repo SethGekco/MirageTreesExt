@@ -739,6 +739,27 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
 }
 
+// Give a disguised techno the "no interaction" cursor of a tree instead of the
+// selectable-object cursor, for the enemy viewers who see it as a tree. The hover
+// cursor's SELECT action is gated on ObjectClass::CanBeSelected — whose shared core
+// is 0x5F6C30 (FootClass::CanBeSelected 0x4DFA50 tail-jumps here after its own
+// +0x6AD check; BuildingClass uses it directly), so this ONE hook covers infantry,
+// buildings and aircraft. Return false (not selectable) while the techno is hidden-
+// as-a-tree from the current viewer. The owner (who sees the real unit) is exempt
+// via MirageHiddenFromViewer, and the enemy's ATTACK cursor + force-fire don't use
+// CanBeSelected, so they still work — you just no longer get the tell-tale select
+// cursor on the fake trees. Suppress path jumps to the bare `ret` at 0x4DFA5C.
+DEFINE_HOOK(0x5F6C30, TechnoClass_CanBeSelected_MirageHide, 0x9)
+{
+	GET(TechnoClass*, pThis, ECX);
+	if (MirageHiddenFromViewer(pThis))
+	{
+		R->EAX(0);        // AL = 0: not selectable
+		return 0x4DFA5C;  // a lone `ret` — returns false to the caller
+	}
+	return 0;
+}
+
 // Suppress the map-hover NAME tooltip for a disguised unit, so hovering an enemy
 // disguise reveals nothing (like hovering a real tree). DisplayClass::SetAction
 // builds the hovered object's tooltip at 0x4ABC31 via `mov eax,[ecx]; call
