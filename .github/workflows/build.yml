@@ -14,6 +14,28 @@ jobs:
         with:
           submodules: recursive
 
+      # Two Syringe hook defects that build and link perfectly and only show up
+      # in game, as a crash with no module to blame:
+      #
+      #   1. OVERLAP — hooks at DIFFERENT addresses whose byte ranges intersect
+      #      corrupt each other's E9 rel32 into a wild jump. Both can be
+      #      instruction-aligned, so only a range check finds it.
+      #   2. RESUME BOUNDARY — Syringe always writes 5 bytes and always resumes
+      #      at addr+max(size,5), so a hook declaring size<5 (or splitting an
+      #      instruction) resumes on orphaned bytes. That is what crashed
+      #      0x6F7CB1: size 4 resumed onto a stray 0x17 = `pop ss` -> #GP.
+      #
+      # The full boundary check needs the game executable, which cannot live in
+      # CI, so this runs the source-only tier. `tools/check_hook_bounds.py --exe
+      # <gamemd-spawn.exe>` runs the complete check locally before deploying.
+      - name: Check Syringe hooks
+        shell: bash
+        run: |
+          curl -sSfL -o hooks.csv \
+            https://raw.githubusercontent.com/SethGekco/YR-Hook-Encyclopedia/main/registry/hooks.csv
+          python3 tools/check_hook_overlap.py hooks.csv src
+          python3 tools/check_hook_bounds.py --registry hooks.csv src
+
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
