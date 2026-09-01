@@ -278,12 +278,21 @@ def boundaries(code, base):
 TERMINATOR_RE = re.compile(r'^(ret|retf|jmp|iret|ud2)\b')
 
 
-def patch_crosses_terminator(bounds, addr):
+# Compiler alignment filler. Overwriting these costs nothing.
+PADDING_BYTES = {0x90, 0xCC}
+
+
+def patch_crosses_terminator(bounds, addr, code):
     """Does Syringe's 5-byte patch write past the end of the code here?
 
     Syringe stamps 5 bytes unconditionally. If a `ret`/`jmp` ends inside that
-    window, everything after it is not code — commonly a switch jump table
-    sitting right behind the epilogue — and the patch silently corrupts it.
+    window, whatever follows is not reached by fall-through, so the patch is
+    writing over something that isn't part of this function.
+
+    That is only a problem if the something is real. Behind an epilogue you get
+    either alignment padding (harmless — SuperWeaponExt 0x6CE8EA spills into
+    NOPs) or live data such as a switch jump table (harmful — 0x4F8361 spills
+    into one). Distinguish them by looking at the bytes.
     """
     for i, (a, text) in enumerate(bounds):
         if a < addr:
@@ -292,7 +301,10 @@ def patch_crosses_terminator(bounds, addr):
         if end is None:
             return None
         if TERMINATOR_RE.match(text) and end < addr + SYRINGE_PATCH_BYTES:
-            return a, text, end, addr + SYRINGE_PATCH_BYTES - end
+            spilled = code[end - addr:SYRINGE_PATCH_BYTES]
+            if spilled and all(b in PADDING_BYTES for b in spilled):
+                return None       # only alignment filler is clobbered
+            return a, text, end, len(spilled)
         if end >= addr + SYRINGE_PATCH_BYTES:
             return None
     return None
@@ -326,7 +338,7 @@ def check_bounds(hooks, exe_path):
         checked += 1
 
         # Worse than a bad resume: the patch itself lands on non-code.
-        crossing = patch_crosses_terminator(bounds, h['addr'])
+        crossing = patch_crosses_terminator(bounds, h['addr'], code)
         if crossing:
             term_at, term_text, term_end, spill = crossing
             problems.append(
