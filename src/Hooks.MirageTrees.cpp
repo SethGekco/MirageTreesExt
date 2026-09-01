@@ -40,6 +40,7 @@
 
 #include <Utilities/Macro.h>
 #include <Utilities/Debug.h>
+#include <Helpers/Cast.h>
 
 #include <Ext/Techno/Body.h>
 #include <Ext/TechnoType/Body.h>
@@ -286,12 +287,34 @@ static bool MirageRevealed(TechnoExt::ExtData* pExt)
 DEFINE_HOOK(0x6FDD50, TechnoClass_Fire_MirageBlink, 0x6)
 {
 	GET(TechnoClass*, pThis, ECX);
+	GET_STACK(AbstractClass*, pTargetAbs, 0x4); // Fire(target, weaponIdx): arg1 = target
 
+	// Our own disguised unit firing → drop its disguise briefly (muzzle blink).
 	if (auto const pExt = TechnoExt::ExtMap.Find(pThis))
 	{
 		auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
 		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0)
 			pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
+	}
+
+	// Drop a stale AUTO-target lock. EvaluateObject only blocks NEW acquisition, so
+	// an enemy that locked this unit BEFORE it disguised keeps hammering it — the
+	// root of the "inconsistent auto-attack". If the firer is auto-attacking (NOT an
+	// explicit Attack/force-fire order) a now-disguised enemy, clear its target so
+	// it stops and re-evaluates (and can't re-acquire the hidden unit). Explicit
+	// orders — Mission::Attack, which is what force-fire uses — are left intact so
+	// the player can still Ctrl-fire a disguise.
+	if (auto const pTgt = abstract_cast<TechnoClass*>(pTargetAbs))
+	{
+		auto const pTgtExt = TechnoExt::ExtMap.Find(pTgt);
+		if (pTgtExt && pTgtExt->MirageDisguiseActive
+			&& pThis->CurrentMission != Mission::Attack
+			&& pThis->Owner && pTgt->Owner
+			&& pThis->Owner != pTgt->Owner
+			&& !pThis->Owner->IsAlliedWith(pTgt->Owner))
+		{
+			pThis->SetTarget(nullptr);
+		}
 	}
 
 	return 0;
