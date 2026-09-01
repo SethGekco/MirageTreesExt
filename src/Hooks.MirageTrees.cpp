@@ -768,6 +768,38 @@ DEFINE_HOOK(0x5F6C30, TechnoClass_CanBeSelected_MirageHide, 0x9)
 	return 0;
 }
 
+// Blank the display NAME of a disguised techno for enemy viewers, so hovering it
+// shows nothing — a tree has no name. The map tooltip AND the attack-cursor target
+// name both call the object's GetUIName, so blanking it at the source covers every
+// path (more robust than hooking one tooltip site). GetUIName is per-class:
+// InfantryClass 0x51F2C0, BuildingClass 0x459ED0. Units use the native disguise
+// (their own GetUIName handles the tree name) and are excluded via
+// MirageHiddenFromViewer. Return a static empty string via the lone `ret` at
+// 0x459ED9 (both hooks borrow it; at each entry the stack is just [retaddr]).
+namespace { const wchar_t MirageNoName[1] = { L'\0' }; }
+
+DEFINE_HOOK(0x51F2C0, InfantryClass_GetUIName_MirageHide, 0x9)
+{
+	GET(TechnoClass*, pThis, ECX);
+	if (MirageHiddenFromViewer(pThis))
+	{
+		R->EAX(reinterpret_cast<DWORD>(&MirageNoName[0]));
+		return 0x459ED9; // a lone `ret`
+	}
+	return 0;
+}
+
+DEFINE_HOOK(0x459ED0, BuildingClass_GetUIName_MirageHide, 0x6)
+{
+	GET(TechnoClass*, pThis, ECX);
+	if (MirageHiddenFromViewer(pThis))
+	{
+		R->EAX(reinterpret_cast<DWORD>(&MirageNoName[0]));
+		return 0x459ED9; // this function's own `ret`
+	}
+	return 0;
+}
+
 // Suppress the map-hover NAME tooltip for a disguised unit, so hovering an enemy
 // disguise reveals nothing (like hovering a real tree). DisplayClass::SetAction
 // builds the hovered object's tooltip at 0x4ABC31 via `mov eax,[ecx]; call
