@@ -642,46 +642,33 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 // centered SHP with the terrain blit flags. Then the caller skips the techno's own
 // draw so the enemy sees only the tree. (First cut — palette/frame/depth/offset may
 // need tuning.)
+// Queued disguise-tree sprite draws, flushed AFTER all object layers so nothing
+// paints over them (the sprite blits fine — proven by a fixed-position probe —
+// but drawing it mid-object-render gets overdrawn by later objects/passes).
+namespace
+{
+	struct MorphDraw { Point2D Pos; SHPStruct* Image; ConvertClass* Palette; };
+	std::vector<MorphDraw> PendingMorphDraws;
+}
+
 static void DrawMirageTree(TechnoClass* pThis)
 {
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
 	auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
 	auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
-	auto const pCell = pThis->GetCell();
-	auto const client = TacticalClass::Instance->CoordsToClient(pThis->GetCoords());
-	auto const pPalette = pCell && pCell->LightConvert
-		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
-		: FileSystem::UNITx_PAL; // fallback so a null cell palette can't blank it
-
-	// Throttled diagnostic (once/frame) to see why the sprite may not blit.
-	static int lastLog = -1;
-	if (lastLog != Unsorted::CurrentFrame)
-	{
-		lastLog = Unsorted::CurrentFrame;
-		Debug::Log("[MirageTreesExt] morph %s tree=%p img=%p cell=%p pal=%p onscreen=%d pos=(%d,%d)\n",
-			pThis->GetTechnoType()->ID, (void*)pTreeType, (void*)pImage, (void*)pCell,
-			(void*)pPalette, client.second, client.first.X, client.first.Y);
-	}
-
 	if (!pImage)
 		return;
 
-	// Explicit generous bounds in case GetRect() is off.
-	RectangleStruct bounds { 0, 0, 4000, 3000 };
+	auto const client = TacticalClass::Instance->CoordsToClient(pThis->GetCoords());
+	if (!client.second)
+		return;
 
-	// PROBE: draw one copy at a FIXED on-screen spot to prove the blit works at
-	// all, independent of the techno's position/Z.
-	Point2D probe { 200, 200 };
-	DSurface::Temp->DrawSHP(pPalette, pImage, 0, &probe, &bounds,
-		static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+	auto const pCell = pThis->GetCell();
+	auto const pPalette = pCell && pCell->LightConvert
+		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+		: FileSystem::UNITx_PAL;
 
-	// The real one at the techno's position.
-	if (client.second)
-	{
-		Point2D pos = client.first;
-		DSurface::Temp->DrawSHP(pPalette, pImage, 0, &pos, &bounds,
-			static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
-	}
+	PendingMorphDraws.push_back({ client.first, pImage, pPalette });
 }
 
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
@@ -689,8 +676,24 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	GET(TechnoClass*, pThis, ESI);
 	if (MirageHiddenFromViewer(pThis))
 	{
-		DrawMirageTree(pThis);   // draw the tree in its place
+		DrawMirageTree(pThis);   // queue the tree in its place
 		return 0x706602;         // skip the techno's own draw for this enemy viewer
+	}
+	return 0;
+}
+
+// Flush queued disguise trees AFTER the tactical object layers are rendered
+// (0x6D95AF = right after the 5-layer render loop, before overlays), so the
+// sprites are painted on top of the objects instead of being overdrawn.
+DEFINE_HOOK(0x6D95AF, TacticalClass_RenderLayers_MorphFlush, 0x5)
+{
+	if (!PendingMorphDraws.empty())
+	{
+		RectangleStruct bounds { 0, 0, 4000, 3000 };
+		for (auto const& m : PendingMorphDraws)
+			DSurface::Temp->DrawSHP(m.Palette, m.Image, 0, &m.Pos, &bounds,
+				static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
+		PendingMorphDraws.clear();
 	}
 	return 0;
 }
