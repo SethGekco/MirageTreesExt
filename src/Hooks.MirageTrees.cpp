@@ -664,7 +664,12 @@ static void DrawMirageTree(TechnoClass* pThis)
 		return;
 
 	auto const pCell = pThis->GetCell();
-	auto const pPalette = pCell && pCell->LightConvert
+	// Don't paint the tree in cells the viewer hasn't revealed — otherwise the
+	// on-top post-pass shows it through the shroud.
+	if (!pCell || pCell->IsShrouded())
+		return;
+
+	auto const pPalette = pCell->LightConvert
 		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
 		: FileSystem::UNITx_PAL;
 
