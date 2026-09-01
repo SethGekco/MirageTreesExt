@@ -50,6 +50,11 @@ public:
 		// Diagnostic: log the "seen a mirage-capable techno" line once only.
 		bool MirageDiagLogged;
 
+		// Frames remaining in the post-fire "blink": while > 0 the disguise is
+		// dropped (real unit shown, enemy can target/name it). Set on Fire, counted
+		// down each frame by the driver. See Mirage.BlinkOnFire.
+		int MirageRevealTimer;
+
 		ExtData(TechnoClass* OwnerObject) : Extension<TechnoClass>(OwnerObject)
 			, MirageTrees {}
 			, MirageActive { false }
@@ -57,6 +62,7 @@ public:
 			, MirageDisguiseTree { nullptr }
 			, MirageAnchor {}
 			, MirageDiagLogged { false }
+			, MirageRevealTimer { 0 }
 		{ }
 
 		virtual ~ExtData() override;

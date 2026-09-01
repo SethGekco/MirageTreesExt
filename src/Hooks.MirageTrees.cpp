@@ -257,6 +257,31 @@ bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
 	return MirageShouldShow(pThis);
 }
 
+// True while a techno is in its post-fire "blink" window (disguise dropped).
+static bool MirageRevealed(TechnoExt::ExtData* pExt)
+{
+	return pExt && pExt->MirageRevealTimer > 0;
+}
+
+// Blink-on-fire: when a disguised techno fires, drop its disguise for a short
+// window so it briefly reveals to enemies (auto-target + hover name), matching a
+// real mirage tank's muzzle blink. The disguise driver counts the timer down and
+// re-disguises when it hits 0. TechnoClass::Fire entry (0x6FDD50, this = ECX);
+// Phobos's Fire hooks live at 0x6FDD7D+, so the entry is uncontended.
+DEFINE_HOOK(0x6FDD50, TechnoClass_Fire_MirageBlink, 0x6)
+{
+	GET(TechnoClass*, pThis, ECX);
+
+	if (auto const pExt = TechnoExt::ExtMap.Find(pThis))
+	{
+		auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0)
+			pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
+	}
+
+	return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Spawn / clear
 // ---------------------------------------------------------------------------
@@ -444,7 +469,7 @@ static void UpdateMirageDisguise(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	if (pThis->WhatAmI() != AbstractType::Unit)
 		return;
 
-	bool const shouldShow = TechnoExt::ShouldHaveMirage(pThis);
+	bool const shouldShow = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
 
 	if (shouldShow && !pExt->MirageDisguiseActive)
 	{
@@ -493,6 +518,10 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (!pExt)
 		return;
 
+	// Count down the post-fire blink; while it runs the disguise stays dropped.
+	if (pExt->MirageRevealTimer > 0)
+		--pExt->MirageRevealTimer;
+
 	// One-time diagnostic per mirage-capable instance: proves the driver hook
 	// fires, the type parsed, and reports the live "still" gate.
 	if (!pExt->MirageDiagLogged)
@@ -520,15 +549,21 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	// techno's place for enemy viewers (and skips the techno's own draw).
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
 	{
-		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis);
+		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
 		if (shouldDisguise && !pExt->MirageDisguiseActive)
 		{
-			auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
-				RulesClass::Instance->DefaultMirageDisguises);
-			if (disguises.size() > 0)
+			// Keep the same tree across a blink so re-disguising doesn't visibly
+			// swap species (a tell); only roll a fresh one when we have none.
+			if (!pExt->MirageDisguiseTree)
 			{
-				pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
-					0, static_cast<int>(disguises.size()) - 1)];
+				auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
+					RulesClass::Instance->DefaultMirageDisguises);
+				if (disguises.size() > 0)
+					pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
+						0, static_cast<int>(disguises.size()) - 1)];
+			}
+			if (pExt->MirageDisguiseTree)
+			{
 				pExt->MirageDisguiseActive = true;
 				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
 			}
@@ -536,7 +571,10 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		else if (!shouldDisguise && pExt->MirageDisguiseActive)
 		{
 			pExt->MirageDisguiseActive = false;
-			pExt->MirageDisguiseTree = nullptr;
+			// A blink keeps the tree (re-disguise as the same one); any other
+			// deactivation (moved, died) forgets it so the next disguise re-rolls.
+			if (!MirageRevealed(pExt))
+				pExt->MirageDisguiseTree = nullptr;
 			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
 		}
 	}

@@ -74,6 +74,11 @@ public:
 		// Mirage.FadePulseRate : frames per translucency step when pulsing.
 		Valueable<int> MirageFadePulseRate;
 
+		// Mirage.BlinkOnFire : frames the disguise drops after this techno fires,
+		// exposing the real unit to enemies (auto-target + tooltip) like a real
+		// mirage tank's muzzle blink. 0 disables the blink.
+		Valueable<int> MirageBlinkOnFire;
+
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
 			, MirageDecoys { false }
 			, MirageDisguise { false }
@@ -86,6 +91,7 @@ public:
 			, MirageFadeStyle { 0 }      // off (solid) unless configured
 			, MirageFadeOpacity { 50 }
 			, MirageFadePulseRate { 15 }
+			, MirageBlinkOnFire { 15 }
 		{ }
 
 		virtual ~ExtData() = default;

@@ -51,6 +51,7 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 		this->MirageFadeStyle, { "none", "pulse", "translucent", "spawn" });
 	this->MirageFadeOpacity.Read(exINI, pSection, "Mirage.FadeOpacity");
 	this->MirageFadePulseRate.Read(exINI, pSection, "Mirage.FadePulseRate");
+	this->MirageBlinkOnFire.Read(exINI, pSection, "Mirage.BlinkOnFire");
 
 	// Diagnostic: only for types that actually participate, so the log stays
 	// quiet (the global DefaultMirageDisguises fallback otherwise matches all).
@@ -98,6 +99,7 @@ void TechnoTypeExt::ExtData::Serialize(T& Stm)
 		.Process(this->MirageFadeStyle)
 		.Process(this->MirageFadeOpacity)
 		.Process(this->MirageFadePulseRate)
+		.Process(this->MirageBlinkOnFire)
 		;
 }
 
