@@ -86,6 +86,18 @@ def resume_addr(addr, size):
     return addr + max(size, SYRINGE_PATCH_BYTES)
 
 
+def strip_comments(text):
+    """Drop // and /* */ comments.
+
+    Not cosmetic: a hook whose body contains `// return address at function
+    entry` was classified UNKNOWN because the scanner matched the word `return`
+    inside that comment and then tried to resolve the following code as its
+    operand.
+    """
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', text)
+
+
 def extract_body(lines, start):
     """Text of the hook body, by brace matching from the DEFINE_HOOK line."""
     depth, started, out = 0, False, []
@@ -126,27 +138,35 @@ def classify_returns(body):
                 consts[item] = nxt
             nxt += 1
 
-    saw_return = False
-    for expr in RETURN_RE.findall(body):
+    def value_of(operand):
+        """Resolve one return operand to an int, or None if we cannot."""
+        operand = operand.strip().strip('()').strip()
+        if operand in ('false', 'nullptr'):
+            return 0
+        if operand == 'true':
+            return 1
+        if re.fullmatch(r'0[xX][0-9A-Fa-f]+|\d+', operand):
+            return int(operand, 0)
+        return consts.get(operand)        # None when unknown
+
+    saw_return, unknown = False, False
+    for expr in RETURN_RE.findall(strip_comments(body)):
         expr = expr.strip()
         saw_return = True
         if not expr:                      # bare `return;` — not a jump target
             return ZERO
-        resolved = []
-        for tok in TOKEN_RE.findall(expr):
-            if tok in ('true', 'false', 'nullptr'):
-                resolved.append(0 if tok in ('false', 'nullptr') else 1)
-            elif re.fullmatch(r'0[xX][0-9A-Fa-f]+|\d+', tok):
-                resolved.append(int(tok, 0))
-            elif tok in consts:
-                resolved.append(consts[tok])
-            elif tok in ('R', 'return'):
-                continue
-            else:
-                return UNKNOWN            # can't prove it never returns 0
-        if any(v == 0 for v in resolved):
-            return ZERO
-    return NEVER_ZERO if saw_return else UNKNOWN
+        # `cond ? A : B` — only the branches can become the return value.
+        operands = ([s for s in expr.split('?', 1)[1].split(':')]
+                    if '?' in expr else [expr])
+        for operand in operands:
+            v = value_of(operand)
+            if v is None:
+                unknown = True
+            elif v == 0:
+                return ZERO
+    if not saw_return:
+        return UNKNOWN
+    return UNKNOWN if unknown else NEVER_ZERO
 
 
 def parse_our_hooks(src_dir):
