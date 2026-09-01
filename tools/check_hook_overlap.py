@@ -33,8 +33,12 @@ import re
 import sys
 from pathlib import Path
 
+# Accepts both Syringe macro conventions: `DEFINE_HOOK(0x4C9EA0, n, 0x5)` and the
+# SYR_VER==2 token-pasting form `DEFINE_HOOK(48EB12, n, 6)`, where the macro
+# prepends 0x to BOTH arguments (so a bare size is hex too).
 HOOK_RE = re.compile(
-    r'\bDEFINE_HOOK(?:_AGAIN)?\s*\(\s*(0x[0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*\)'
+    r'\bDEFINE_HOOK(?:_AGAIN)?\s*\(\s*((?:0[xX])?[0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*'
+    r'((?:0[xX])?[0-9A-Fa-f]+)\s*\)'
 )
 
 
@@ -43,9 +47,11 @@ def parse_our_hooks(src_dir):
     for path in sorted(Path(src_dir).rglob('*.cpp')):
         text = path.read_text(encoding='utf-8', errors='replace')
         for addr, name, size in HOOK_RE.findall(text):
+            pasted = not addr.lower().startswith('0x')
             hooks.append({
                 'addr': int(addr, 16),
-                'size': int(size, 16) if size.lower().startswith('0x') else int(size),
+                'size': (int(size, 16) if pasted or size.lower().startswith('0x')
+                         else int(size)),
                 'name': name,
                 'where': f'{path}',
             })

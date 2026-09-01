@@ -60,9 +60,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Two Syringe macro conventions are in use across these projects, and they read
+# their arguments differently:
+#
+#   {  hook, size, ... }          -- values as written: DEFINE_HOOK(0x4C9EA0, n, 0x5)
+#   { 0x ## hook, 0x ## size }    -- SYR_VER==2 pastes the prefix on:
+#                                    DEFINE_HOOK(48EB12, n, 6)  ==  0x48EB12, 0x6
+#
+# Under the pasting form BOTH arguments are hex, so a size written `10` means 16.
+# Detect it by the missing 0x on the address, and parse the size the same way.
 HOOK_RE = re.compile(
-    r'\bDEFINE_HOOK(?:_AGAIN)?\s*\(\s*(0x[0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*'
-    r'(0x[0-9A-Fa-f]+|\d+)\s*\)'
+    r'\bDEFINE_HOOK(?:_AGAIN)?\s*\(\s*((?:0[xX])?[0-9A-Fa-f]+)\s*,\s*(\w+)\s*,\s*'
+    r'((?:0[xX])?[0-9A-Fa-f]+)\s*\)'
 )
 # An explicit, reviewed waiver. Suppresses ALL three defect classes, because the
 # only thing that can clear them is a human having checked reachability — see
@@ -186,9 +195,11 @@ def parse_our_hooks(src_dir):
                 if w:
                     waiver = w.group(1).strip() or '(no reason given)'
                     break
+            pasted = not addr.lower().startswith('0x')
             hooks.append({
                 'addr': int(addr, 16),
-                'size': int(size, 16) if size.lower().startswith('0x') else int(size),
+                'size': (int(size, 16) if pasted or size.lower().startswith('0x')
+                         else int(size)),
                 'name': name,
                 'where': f'{path}:{i + 1}',
                 'waiver': waiver,
