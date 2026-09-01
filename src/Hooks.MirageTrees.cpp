@@ -748,7 +748,14 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 // is one of our disguised units and the scanner is an enemy (not owner/allied),
 // jump to the function's own reject exit 0x6F894F (returns AL=0 = "no target").
 // Owner/allies fall through and target it normally. Verified in Ghidra.
-DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x4)
+// SIZE MUST BE 6, NOT 4. The instruction at 0x6F7CB1 is only 4 bytes
+// (8B 74 24 4C = mov esi,[esp+0x4C]), but Syringe always writes a 5-byte
+// E9 rel32 and always resumes at addr + max(size,5). With size 4 it wrote over
+// the 8B of `mov edx,[edi]` at 0x6F7CB5 and resumed at 0x6F7CB6 — the orphaned
+// 17 byte, which decodes as `pop ss` and #GPs on every `return 0` (i.e. almost
+// every call). Size 6 subsumes both instructions: the stub copies them and
+// resumes at 0x6F7CB7 (`push esi`), an instruction boundary.
+DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x6)
 {
 	GET(TechnoClass*, pScanner, EDI);
 	GET_STACK(TechnoClass*, pCandidate, 0x4C);
