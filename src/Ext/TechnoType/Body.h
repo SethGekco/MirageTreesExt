@@ -79,6 +79,12 @@ public:
 		// mirage tank's muzzle blink. 0 disables the blink.
 		Valueable<int> MirageBlinkOnFire;
 
+		// Mirage.StillDelay : consecutive frames an infantry/aircraft must hold
+		// still before its disguise engages. Debounces the flickery instantaneous
+		// speed read so a walking unit never briefly morphs into a tree. Movement
+		// drops the disguise instantly regardless. (Units/buildings ignore this.)
+		Valueable<int> MirageStillDelay;
+
 		ExtData(TechnoTypeClass* OwnerObject) : Extension<TechnoTypeClass>(OwnerObject)
 			, MirageDecoys { false }
 			, MirageDisguise { false }
@@ -92,6 +98,7 @@ public:
 			, MirageFadeOpacity { 50 }
 			, MirageFadePulseRate { 15 }
 			, MirageBlinkOnFire { 15 }
+			, MirageStillDelay { 15 }
 		{ }
 
 		virtual ~ExtData() = default;

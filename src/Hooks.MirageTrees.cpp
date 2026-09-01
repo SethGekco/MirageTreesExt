@@ -254,7 +254,22 @@ bool TechnoExt::ShouldHaveMirage(TechnoClass* pThis)
 	if (!pTypeExt || !pTypeExt->HasMirageTrees())
 		return false;
 
-	return MirageShouldShow(pThis);
+	// Infantry/aircraft: gate on the debounced still counter (driven once/frame by
+	// UpdateMirageTrees), NOT the raw instantaneous read — the locomotor speed can
+	// read 0 for a frame mid-walk, and a single such frame would otherwise morph a
+	// walking unit into a tree and drop it off enemy targeting. Units (native flag)
+	// and buildings (always still) are reliable and use the raw check.
+	switch (pThis->WhatAmI())
+	{
+	case AbstractType::Infantry:
+	case AbstractType::Aircraft:
+	{
+		auto const pExt = TechnoExt::ExtMap.Find(pThis);
+		return pExt && pExt->MirageStillFrames >= pTypeExt->MirageStillDelay;
+	}
+	default:
+		return MirageShouldShow(pThis);
+	}
 }
 
 // True while a techno is in its post-fire "blink" window (disguise dropped).
@@ -539,6 +554,19 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
 	if (!pTypeExt)
 		return;
+
+	// Debounce the flickery infantry/aircraft "still" read: accumulate consecutive
+	// still frames (capped at the delay), reset instantly on any movement. The
+	// disguise gates on this counter via ShouldHaveMirage, so a walking unit never
+	// briefly morphs into a tree or drops off enemy targeting. (Harmless for
+	// units/buildings, whose ShouldHaveMirage ignores the counter.)
+	if (MirageShouldShow(pThis))
+	{
+		if (pExt->MirageStillFrames < pTypeExt->MirageStillDelay)
+			++pExt->MirageStillFrames;
+	}
+	else
+		pExt->MirageStillFrames = 0;
 
 	// Units self-disguise via the native field (renders as a real tree, safe).
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)

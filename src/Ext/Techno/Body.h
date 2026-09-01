@@ -55,6 +55,12 @@ public:
 		// down each frame by the driver. See Mirage.BlinkOnFire.
 		int MirageRevealTimer;
 
+		// Consecutive frames this (infantry/aircraft) techno has read "still".
+		// Debounces the flickery instantaneous speed read: the disguise only
+		// engages once this reaches Mirage.StillDelay, so a moving unit never
+		// briefly morphs into a tree or drops off enemy targeting. Reset on move.
+		int MirageStillFrames;
+
 		ExtData(TechnoClass* OwnerObject) : Extension<TechnoClass>(OwnerObject)
 			, MirageTrees {}
 			, MirageActive { false }
@@ -63,6 +69,7 @@ public:
 			, MirageAnchor {}
 			, MirageDiagLogged { false }
 			, MirageRevealTimer { 0 }
+			, MirageStillFrames { 0 }
 		{ }
 
 		virtual ~ExtData() override;
