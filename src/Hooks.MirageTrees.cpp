@@ -641,6 +641,14 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 				pExt->MirageDisguiseTree = nullptr;
 			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
 		}
+
+		// The morph tree is only (re)drawn on frames the techno's own DrawObject
+		// runs — every frame for foot units (they animate), but buildings only
+		// redraw when their cell is dirtied, so a disguised BUILDING's tree blinks
+		// on and off. Keep a disguised building marked for redraw each frame so its
+		// tree is painted every frame, steady like an infantryman's.
+		if (pExt->MirageDisguiseActive && pThis->WhatAmI() == AbstractType::Building)
+			pThis->Mark(MarkType::ChangeRedraw);
 	}
 
 	// Decoys: separate scattered tree objects (independent of disguise).
