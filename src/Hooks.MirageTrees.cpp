@@ -637,6 +637,22 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
 }
 
+// Suppress the map-hover NAME tooltip for a disguised unit, so hovering an enemy
+// disguise reveals nothing (like hovering a real tree). DisplayClass::SetAction
+// builds the hovered object's tooltip at 0x4ABC31 via `mov eax,[ecx]; call
+// [eax+0x90]` (ECX = the hovered object = GetUIName's `this`), then feeds the name
+// to the tooltip-text setter. When ECX == null the game already skips that block
+// and continues at 0x4ABC46 (both paths converge there). We take the same skip for
+// our disguised-from-viewer technos. Verified in objdump. WhatAmI()/ExtMap.Find are
+// safe on any ObjectClass, so a non-techno hovered object falls through harmlessly.
+DEFINE_HOOK(0x4ABC31, DisplayClass_SetAction_MirageTooltip, 0xA)
+{
+	GET(TechnoClass*, pObj, ECX);
+	if (pObj && MirageHiddenFromViewer(pObj))
+		return 0x4ABC46; // skip the name → no tooltip, exactly like a tree
+	return 0;
+}
+
 // PURE MORPH: render the chosen tree's sprite at the techno's position, matching
 // how the game draws a real tree — DSurface::Temp, the cell's LightConvert palette,
 // centered SHP with the terrain blit flags. Then the caller skips the techno's own
