@@ -614,6 +614,19 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
 	{
 		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
+
+		// TEMP DIAGNOSTIC: log every disguise state flip for buildings, to measure
+		// whether (and how often) a pillbox's disguise is toggling.
+		if (pThis->WhatAmI() == AbstractType::Building
+			&& shouldDisguise != pExt->MirageDisguiseActive)
+		{
+			Debug::Log("[MirageBldgDiag] %s frame=%d flip -> %d "
+				"(shouldHaveMirage=%d revealed=%d health=%d inLimbo=%d)\n",
+				pThis->GetTechnoType()->ID, Unsorted::CurrentFrame,
+				shouldDisguise, TechnoExt::ShouldHaveMirage(pThis),
+				MirageRevealed(pExt), pThis->Health, pThis->InLimbo);
+		}
+
 		if (shouldDisguise && !pExt->MirageDisguiseActive)
 		{
 			// Keep the same tree across a blink so re-disguising doesn't visibly
