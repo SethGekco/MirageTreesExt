@@ -614,19 +614,6 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
 	{
 		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
-
-		// TEMP DIAGNOSTIC: log every disguise state flip for buildings, to measure
-		// whether (and how often) a pillbox's disguise is toggling.
-		if (pThis->WhatAmI() == AbstractType::Building
-			&& shouldDisguise != pExt->MirageDisguiseActive)
-		{
-			Debug::Log("[MirageBldgDiag] %s frame=%d flip -> %d "
-				"(shouldHaveMirage=%d revealed=%d health=%d inLimbo=%d)\n",
-				pThis->GetTechnoType()->ID, Unsorted::CurrentFrame,
-				shouldDisguise, TechnoExt::ShouldHaveMirage(pThis),
-				MirageRevealed(pExt), pThis->Health, pThis->InLimbo);
-		}
-
 		if (shouldDisguise && !pExt->MirageDisguiseActive)
 		{
 			// Keep the same tree across a blink so re-disguising doesn't visibly
@@ -829,6 +816,21 @@ DEFINE_HOOK(0x4ABC31, DisplayClass_SetAction_MirageTooltip, 0xA)
 	return 0;
 }
 
+// The DELAYED map hover-name tooltip (DisplayClass::GetToolTip) is a SEPARATE path
+// that also names the hovered object. At 0x4AE668 it loads the object from
+// [esp+0xC] into ECX then calls its GetUIName ([edx+0x90]) at 0x4AE672. We can't
+// blank it via the getter for buildings — Antares owns BuildingClass::GetUIName
+// (EnemyUIName) and wins the hook chain — so intercept the CALL SITE instead:
+// for a disguised-from-viewer object, jump to the function's own "no object"
+// return (0x4AE69B: xor eax,eax; ret) so no name is produced. Covers every class.
+DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
+{
+	GET_STACK(TechnoClass*, pObj, 0xC);
+	if (pObj && MirageHiddenFromViewer(pObj))
+		return 0x4AE69B; // returns null tooltip text
+	return 0;
+}
+
 // PURE MORPH: render the chosen tree's sprite at the techno's position, matching
 // how the game draws a real tree — DSurface::Temp, the cell's LightConvert palette,
 // centered SHP with the terrain blit flags. Then the caller skips the techno's own
@@ -856,11 +858,13 @@ static void DrawMirageTree(TechnoClass* pThis)
 		return;
 
 	auto const pCell = pThis->GetCell();
-	// Don't paint the tree in cells the viewer can't currently see. The tree draws
-	// in an on-top post-pass (after the object layers), so without this it shows
-	// through both black shroud AND grey fog-of-war — a bright tree floating over
-	// unexplored/fogged ground. Skip both states.
-	if (!pCell || pCell->IsShrouded() || pCell->IsFogged())
+	// Don't paint the tree in cells the viewer hasn't revealed (black shroud), so it
+	// doesn't float over unexplored ground. NOTE: intentionally NOT gating on
+	// IsFogged() — that reading flickers frame-to-frame for a currently-visible cell
+	// (the pillbox we're hovering), which was skipping the tree on random frames and
+	// showing ground through it (the "tree flashing" bug). DrawObject isn't called
+	// for units in fully-fogged cells anyway.
+	if (!pCell || pCell->IsShrouded())
 		return;
 
 	auto const pPalette = pCell->LightConvert
