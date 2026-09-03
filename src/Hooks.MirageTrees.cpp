@@ -831,56 +831,63 @@ DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
 	return 0;
 }
 
-// PURE MORPH: render the chosen tree's sprite at the techno's position, matching
-// how the game draws a real tree — DSurface::Temp, the cell's LightConvert palette,
-// centered SHP with the terrain blit flags. Then the caller skips the techno's own
-// draw so the enemy sees only the tree. (First cut — palette/frame/depth/offset may
-// need tuning.)
-// Queued disguise-tree sprite draws, flushed AFTER all object layers so nothing
-// paints over them (the sprite blits fine — proven by a fixed-position probe —
-// but drawing it mid-object-render gets overdrawn by later objects/passes).
+// #3 OBJECT-LAYER DISGUISE. Instead of skipping the techno's draw and painting the
+// tree in a later top pass (which drew over the shroud and wasn't occluded by front
+// objects), we let the techno draw ITSELF but swap the sprite it blits to the tree.
+// The tree then renders in the object's own layer — occluded and shrouded exactly
+// like a real tree, and baked into the cell (no flash, correct fog). The disguised
+// techno's DrawObject sets these; the CC_Draw_Shape hook substitutes them (frame 0
+// so the object's facing/sequence frame index can't read past the tree's frames);
+// the DrawObject epilogue clears them.
 namespace
 {
-	struct MorphDraw { Point2D Pos; SHPStruct* Image; ConvertClass* Palette; };
-	std::vector<MorphDraw> PendingMorphDraws;
-}
-
-static void DrawMirageTree(TechnoClass* pThis)
-{
-	auto const pExt = TechnoExt::ExtMap.Find(pThis);
-	auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
-	auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
-	if (!pImage)
-		return;
-
-	auto const client = TacticalClass::Instance->CoordsToClient(pThis->GetCoords());
-	if (!client.second)
-		return;
-
-	auto const pCell = pThis->GetCell();
-	// Don't paint the tree in cells the viewer hasn't revealed (black shroud), so it
-	// doesn't float over unexplored ground. NOTE: intentionally NOT gating on
-	// IsFogged() — that reading flickers frame-to-frame for a currently-visible cell
-	// (the pillbox we're hovering), which was skipping the tree on random frames and
-	// showing ground through it (the "tree flashing" bug). DrawObject isn't called
-	// for units in fully-fogged cells anyway.
-	if (!pCell || pCell->IsShrouded())
-		return;
-
-	auto const pPalette = pCell->LightConvert
-		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
-		: FileSystem::UNITx_PAL;
-
-	PendingMorphDraws.push_back({ client.first, pImage, pPalette });
+	SHPStruct* MirageMorphSHP = nullptr;
+	ConvertClass* MirageMorphPalette = nullptr;
 }
 
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
+
+	MirageMorphSHP = nullptr; // default: this object draws itself normally
 	if (MirageHiddenFromViewer(pThis))
 	{
-		DrawMirageTree(pThis);   // queue the tree in its place
-		return 0x706602;         // skip the techno's own draw for this enemy viewer
+		auto const pExt = TechnoExt::ExtMap.Find(pThis);
+		auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
+		auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
+		auto const pCell = pThis->GetCell();
+		// Only morph where the viewer has revealed the cell (skip black shroud). The
+		// object's own draw handles depth/layer/shroud/occlusion; we only swap pixels.
+		if (pImage && pCell && !pCell->IsShrouded())
+		{
+			MirageMorphSHP = pImage;
+			MirageMorphPalette = pCell->LightConvert
+				? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+				: FileSystem::UNITx_PAL;
+		}
+	}
+	return 0; // let the techno draw itself; CC_Draw_Shape paints it as the tree
+}
+
+// Clear the swap when the techno's DrawObject returns (0x706602 = its epilogue:
+// pop edi/esi/ebp/ebx; add esp,0x44; ret 0x40), so the swap only applies to the
+// disguised object's own sprite blits and never leaks to later draws.
+DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
+{
+	MirageMorphSHP = nullptr;
+	return 0;
+}
+
+// The sprite-swap itself. CC_Draw_Shape (0x4AED70, __fastcall): ECX=surface,
+// EDX=palette, [esp+4]=SHP, [esp+8]=FrameIndex. While a disguised techno is drawing,
+// paint the tree SHP at frame 0 with the cell's palette in place of the unit sprite.
+DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
+{
+	if (MirageMorphSHP)
+	{
+		R->Stack<DWORD>(0x4, reinterpret_cast<DWORD>(MirageMorphSHP)); // SHP
+		R->Stack<int>(0x8, 0);                                         // FrameIndex
+		R->EDX(reinterpret_cast<DWORD>(MirageMorphPalette));           // Palette
 	}
 	return 0;
 }
@@ -920,21 +927,8 @@ DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x6)
 	return 0x6F894F; // enemy: the disguised unit is not a valid target
 }
 
-// Flush queued disguise trees AFTER the tactical object layers are rendered
-// (0x6D95AF = right after the 5-layer render loop, before overlays), so the
-// sprites are painted on top of the objects instead of being overdrawn.
-DEFINE_HOOK(0x6D95AF, TacticalClass_RenderLayers_MorphFlush, 0x5)
-{
-	if (!PendingMorphDraws.empty())
-	{
-		RectangleStruct bounds { 0, 0, 4000, 3000 };
-		for (auto const& m : PendingMorphDraws)
-			DSurface::Temp->DrawSHP(m.Palette, m.Image, 0, &m.Pos, &bounds,
-				static_cast<BlitterFlags>(0x0600), 0, 0, ZGradient::Ground, 1000, 0, nullptr, 0, 0, 0);
-		PendingMorphDraws.clear();
-	}
-	return 0;
-}
+// (The old post-pass tree flush at 0x6D95AF is gone — #3 draws the tree inside the
+//  object's own draw via CC_Draw_Shape, so there is nothing to flush afterwards.)
 
 // The chevrons/pips/health-bar are drawn in a SEPARATE pass (DrawExtras), which
 // the DrawObject skip above misses — enemies could still see the veterancy
