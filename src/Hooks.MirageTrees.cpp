@@ -486,6 +486,17 @@ void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt, bool deferDelete)
 
 	pExt->MirageTrees.clear();
 	pExt->MirageActive = false;
+
+	// If this techno was disguised as a tree (pure morph), its last tree frame was
+	// painted through its own draw and overhangs its cell. When it dies its own cell
+	// is repainted (rubble) but the overhang cells are not, leaving a tree stuck on
+	// screen until the view moves. Dirty the block so the ghost clears immediately.
+	if (pExt->MirageDisguiseActive)
+	{
+		pExt->MirageDisguiseActive = false;
+		if (auto const pThis = pExt->OwnerObject())
+			DirtyDecoyArea(pThis->GetMapCoords(), 2);
+	}
 }
 
 void TechnoExt::ClearMirageTrees(TechnoClass* pThis)
@@ -630,6 +641,11 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			{
 				pExt->MirageDisguiseActive = true;
 				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
+				// The tree sprite overhangs its cell (foliage rises north on screen);
+				// Mark only dirties the unit's own cell, leaving the overhang cells
+				// stale (tree drawn only partially until you nudge the view). Dirty a
+				// block so the whole tree paints, and later fully clears.
+				DirtyDecoyArea(pThis->GetMapCoords(), 2);
 			}
 		}
 		else if (!shouldDisguise && pExt->MirageDisguiseActive)
@@ -640,6 +656,7 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			if (!MirageRevealed(pExt))
 				pExt->MirageDisguiseTree = nullptr;
 			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
+			DirtyDecoyArea(pThis->GetMapCoords(), 2); // clear the tree's overhang
 		}
 
 		// The morph tree is only (re)drawn on frames the techno's own DrawObject
@@ -879,15 +896,31 @@ DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
 }
 
 // The sprite-swap itself. CC_Draw_Shape (0x4AED70, __fastcall): ECX=surface,
-// EDX=palette, [esp+4]=SHP, [esp+8]=FrameIndex. While a disguised techno is drawing,
-// paint the tree SHP at frame 0 with the cell's palette in place of the unit sprite.
+// EDX=palette, then stack args: [esp+4]=SHP, [esp+8]=FrameIndex, [esp+0xC]=Position,
+// [esp+0x10]=Bounds, [esp+0x14]=Flags, [esp+0x18]=Remap, [esp+0x1C]=ZAdjust,
+// [esp+0x20]=ZGradient, [esp+0x24]=Brightness, [esp+0x28]=TintColor,
+// [esp+0x2C]=ZShape, [esp+0x30]=ZShapeFrame. While a disguised techno draws, paint
+// the tree SHP (frame 0) with the cell palette in place of the unit sprite, and make
+// it look/behave like real terrain rather than the unit:
+//   - zero Remap + TintColor  (the unit's house colour was tinting the tree),
+//   - drop the per-pixel Alpha flag (it made the tree look translucent),
+//   - feed the tree SHP as the ZShape so the tree's OWN silhouette writes depth —
+//     otherwise the unit's small footprint was used and the cell behind clipped the
+//     tree's overhang ("part of the tree cut to the shape of the cell behind").
 DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 {
 	if (MirageMorphSHP)
 	{
-		R->Stack<DWORD>(0x4, reinterpret_cast<DWORD>(MirageMorphSHP)); // SHP
+		auto const shp = reinterpret_cast<DWORD>(MirageMorphSHP);
+		R->Stack<DWORD>(0x4, shp);                                     // SHP
 		R->Stack<int>(0x8, 0);                                         // FrameIndex
 		R->EDX(reinterpret_cast<DWORD>(MirageMorphPalette));           // Palette
+		R->Stack<DWORD>(0x14, R->Stack<DWORD>(0x14)
+			& ~static_cast<DWORD>(BlitterFlags::Alpha));               // Flags: drop Alpha
+		R->Stack<int>(0x18, 0);                                        // Remap
+		R->Stack<int>(0x28, 0);                                        // TintColor
+		R->Stack<DWORD>(0x2C, shp);                                    // ZShape = tree
+		R->Stack<int>(0x30, 0);                                        // ZShapeFrame
 	}
 	return 0;
 }
