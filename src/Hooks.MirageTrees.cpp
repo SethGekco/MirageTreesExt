@@ -289,15 +289,15 @@ DEFINE_HOOK(0x6FDD50, TechnoClass_Fire_MirageBlink, 0x6)
 	GET(TechnoClass*, pThis, ECX);
 	GET_STACK(AbstractClass*, pTargetAbs, 0x4); // Fire(target, weaponIdx): arg1 = target
 
-	// Our own disguised unit firing → drop its disguise briefly (muzzle blink).
-	// Buildings are excluded: a defensive structure fires constantly, so a per-shot
-	// reveal just makes it flicker between tree and structure instead of staying a
-	// steady tree. Stationary structures keep the disguise up while they fire.
+	// Our own disguised unit firing → drop its disguise (reveal) for a window. This
+	// now applies to BUILDINGS too: with the object-layer render + the "reveal while
+	// it has a target" latch below, a firing pillbox stays revealed for the whole
+	// engagement and re-disguises when idle (no per-shot flicker like the old
+	// skip+post-pass render caused).
 	if (auto const pExt = TechnoExt::ExtMap.Find(pThis))
 	{
 		auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0
-			&& pThis->WhatAmI() != AbstractType::Building)
+		if (pTypeExt && pTypeExt->MirageDisguise && pTypeExt->MirageBlinkOnFire > 0)
 			pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
 	}
 
@@ -606,13 +606,12 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	else
 		pExt->MirageStillFrames = 0;
 
-	// Keep the disguise dropped for as long as the unit holds a target, not just
-	// for one blink per shot. A defensive structure (e.g. a pillbox) fires many
-	// times a second; blinking per-shot re-added the disguise between shots and
-	// flickered constantly. Latching on Target means it stays exposed through the
-	// whole engagement and re-disguises BlinkOnFire frames after the target drops.
-	if (pTypeExt->MirageBlinkOnFire > 0 && pThis->Target
-		&& pThis->WhatAmI() != AbstractType::Building)
+	// Keep the disguise dropped for as long as the unit holds a target, not just for
+	// one blink per shot. Now includes BUILDINGS: a pillbox fires many times a second,
+	// so latching the reveal on Target keeps it a visible structure for the whole
+	// engagement and re-disguises BlinkOnFire frames after the target drops — with the
+	// object-layer render this is a clean reveal, not the old per-shot flicker.
+	if (pTypeExt->MirageBlinkOnFire > 0 && pThis->Target)
 		pExt->MirageRevealTimer = pTypeExt->MirageBlinkOnFire;
 
 	// Units self-disguise via the native field (renders as a real tree, safe).
