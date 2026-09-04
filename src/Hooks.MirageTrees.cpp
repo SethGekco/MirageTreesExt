@@ -678,12 +678,13 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		if (pExt->MirageDisguisedFrames < 0x7FFF)
 			++pExt->MirageDisguisedFrames;
 
-		// The owner pulse flips the render unit<->tree on a 90-frame cycle (tree in
-		// [75,90)); on those two toggle frames dirty the overhang so the tall tree
-		// doesn't leave a partial top or a ghost when it swaps. (Cheap: 2 frames/90;
-		// harmless for the steady enemy-view tree.)
+		// The owner pulse cross-fades the render (unit<->tree) across the transition
+		// frames of a 90-frame cycle (fades at [69,75) and [84,90)). The translucency
+		// changes each of those frames, so dirty the tall tree's overhang across the
+		// whole active window (incl. the wrap at 0) or it leaves partial tops / ghosts
+		// as it fades. Harmless for the steady enemy-view tree (redraws the same tree).
 		int const phase = Unsorted::CurrentFrame % 90;
-		if (phase == 0 || phase == 75)
+		if (phase == 0 || phase >= 69)
 			DirtyDecoyArea(pThis->GetMapCoords(), 2);
 	}
 	else
@@ -785,44 +786,76 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
 }
 
-// Whether the CURRENT viewer should see this techno DRAWN as the tree. Used only by
-// the object-layer sprite-swap + the DrawExtras skip — NOT by targeting/tooltip/
+// How the CURRENT viewer sees a disguised techno THIS frame. Used only by the
+// object-layer sprite-swap + the DrawExtras skip — NOT by targeting/tooltip/
 // selection (those stay enemy-only via MirageHiddenFromViewer, so the owner can
-// still select and command a disguised unit while it visually pulses).
-//   - enemies: always a tree.
-//   - owner / allies (per Mirage.FadeAudience): a brief periodic PULSE to the tree,
-//     ~1s of every ~5s, so the player can tell the unit is miraged — mirroring how
-//     a vanilla mirage tank periodically shows its owner the tree.
-static bool MirageRenderAsTree(TechnoClass* pThis)
+// still select/command it while it visually pulses).
+//   - enemies: always a solid tree.
+//   - owner / allies (per Mirage.FadeAudience): a periodic CROSS-FADE pulse — the
+//     unit fades out, the tree fades in, holds ~0.5s, fades out, unit fades in — so
+//     the player can tell it's miraged without a hard pop (like a vanilla mirage
+//     tank). DrawTree = swap to the tree this frame; Blit = extra translucency to OR
+//     into the blit flags (applied to the tree when DrawTree, else to the unit).
+struct MirageMorph { bool DrawTree; SHPStruct* SHP; ConvertClass* Palette; BlitterFlags Blit; };
+
+static MirageMorph MirageComputeMorph(TechnoClass* pThis)
 {
+	MirageMorph m { false, nullptr, nullptr, BlitterFlags::None };
+
 	if (pThis->WhatAmI() == AbstractType::Unit)
-		return false; // units use the native field disguise
+		return m; // units use the native field disguise
 
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
 	if (!pExt || !pExt->MirageDisguiseActive)
-		return false;
+		return m;
 
 	auto const pObs = HouseClass::CurrentPlayer;
 	if (!pObs || !pThis->Owner)
-		return false;
+		return m;
 
+	auto const pTreeType = pExt->MirageDisguiseTree;
+	auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
+	auto const pCell = pThis->GetCell();
+	if (!pImage || !pCell || pCell->IsShrouded())
+		return m; // nothing to draw / viewer can't see the cell
+
+	m.SHP = pImage;
+	m.Palette = pCell->LightConvert
+		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+		: FileSystem::UNITx_PAL;
+
+	// Enemy: always a solid tree, no fade.
 	if (pObs != pThis->Owner && !pObs->IsAlliedWith(pThis->Owner))
-		return true; // enemy: always a tree
+	{
+		m.DrawTree = true;
+		return m;
+	}
 
+	// Owner / allies in the fade audience: the periodic cross-fade pulse.
 	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-	if (!pTypeExt)
-		return false;
-
-	int const aud = pTypeExt->MirageFadeAudience;
+	int const aud = pTypeExt ? pTypeExt->MirageFadeAudience : 0;
 	bool const inAudience =
 		aud == AUD_ALL ||
 		(aud == AUD_OWNER && pObs == pThis->Owner) ||
 		(aud == AUD_ALLIES && (pObs == pThis->Owner || pObs->IsAlliedWith(pThis->Owner)));
 	if (!inAudience)
-		return false;
+		return m; // owner not in audience → always the real unit
 
-	// ~1s tree in a ~5s cycle (frame-based, scales with game speed).
-	return (Unsorted::CurrentFrame % 90) >= 75;
+	// 90-frame cycle (scales with game speed). 25/50/75 = increasing transparency.
+	static const BlitterFlags fadeOut[3] = // solid -> gone
+		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
+	static const BlitterFlags fadeIn[3]  = // gone -> solid
+		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+
+	int const phase = Unsorted::CurrentFrame % 90;
+	if (phase < 69)      { m.DrawTree = false; }                       // unit solid
+	else if (phase < 72) { m.DrawTree = false; m.Blit = fadeOut[phase - 69]; } // unit fades out
+	else if (phase < 75) { m.DrawTree = true;  m.Blit = fadeIn[phase - 72]; }  // tree fades in
+	else if (phase < 84) { m.DrawTree = true;  }                       // tree solid (~0.5s)
+	else if (phase < 87) { m.DrawTree = true;  m.Blit = fadeOut[phase - 84]; } // tree fades out
+	else                 { m.DrawTree = false; m.Blit = fadeIn[phase - 87]; }  // unit fades in
+
+	return m;
 }
 
 // Give a disguised techno the "no interaction" cursor of a tree instead of the
@@ -919,40 +952,29 @@ DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
 // the DrawObject epilogue clears them.
 namespace
 {
-	SHPStruct* MirageMorphSHP = nullptr;
+	SHPStruct* MirageMorphSHP = nullptr;      // set → swap the blit to this tree SHP
 	ConvertClass* MirageMorphPalette = nullptr;
+	BlitterFlags MirageMorphBlit = BlitterFlags::None; // extra translucency (pulse fade)
 }
 
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
 
-	MirageMorphSHP = nullptr; // default: this object draws itself normally
-	if (MirageRenderAsTree(pThis)) // enemies always; owner/allies pulse periodically
-	{
-		auto const pExt = TechnoExt::ExtMap.Find(pThis);
-		auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
-		auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
-		auto const pCell = pThis->GetCell();
-		// Only morph where the viewer has revealed the cell (skip black shroud). The
-		// object's own draw handles depth/layer/shroud/occlusion; we only swap pixels.
-		if (pImage && pCell && !pCell->IsShrouded())
-		{
-			MirageMorphSHP = pImage;
-			MirageMorphPalette = pCell->LightConvert
-				? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
-				: FileSystem::UNITx_PAL;
-		}
-	}
-	return 0; // let the techno draw itself; CC_Draw_Shape paints it as the tree
+	auto const m = MirageComputeMorph(pThis);
+	MirageMorphSHP     = m.DrawTree ? m.SHP : nullptr; // swap to the tree this frame?
+	MirageMorphPalette = m.Palette;
+	MirageMorphBlit    = m.Blit;                        // pulse-fade translucency (may be None)
+	return 0; // let the techno draw itself; CC_Draw_Shape paints it as the tree / fades it
 }
 
 // Clear the swap when the techno's DrawObject returns (0x706602 = its epilogue:
-// pop edi/esi/ebp/ebx; add esp,0x44; ret 0x40), so the swap only applies to the
-// disguised object's own sprite blits and never leaks to later draws.
+// pop edi/esi/ebp/ebx; add esp,0x44; ret 0x40), so it only applies to the disguised
+// object's own sprite blits and never leaks to later draws.
 DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
 {
 	MirageMorphSHP = nullptr;
+	MirageMorphBlit = BlitterFlags::None;
 	return 0;
 }
 
@@ -970,20 +992,26 @@ DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
 //     tree's overhang ("part of the tree cut to the shape of the cell behind").
 DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 {
+	auto const morphBlit = static_cast<DWORD>(MirageMorphBlit);
 	if (MirageMorphSHP)
 	{
-		auto const shp = reinterpret_cast<DWORD>(MirageMorphSHP);
-		R->Stack<DWORD>(0x4, shp);                                     // SHP
+		// Swap the unit sprite for the tree (frame 0), cell palette, no house-colour
+		// remap/tint, drop per-pixel Alpha; OR in the pulse-fade translucency.
+		R->Stack<DWORD>(0x4, reinterpret_cast<DWORD>(MirageMorphSHP));  // SHP
 		R->Stack<int>(0x8, 0);                                         // FrameIndex
 		R->EDX(reinterpret_cast<DWORD>(MirageMorphPalette));           // Palette
-		R->Stack<DWORD>(0x14, R->Stack<DWORD>(0x14)
-			& ~static_cast<DWORD>(BlitterFlags::Alpha));               // Flags: drop Alpha
+		R->Stack<DWORD>(0x14, (R->Stack<DWORD>(0x14)
+			& ~static_cast<DWORD>(BlitterFlags::Alpha)) | morphBlit);  // Flags
 		R->Stack<int>(0x18, 0);                                        // Remap
 		R->Stack<int>(0x28, 0);                                        // TintColor
-		// NOTE: do NOT set ZShape here — feeding the tree SHP as the Z mask made the
-		// blit cull itself (the disguise went fully invisible). The overhang-clipped-
-		// by-the-cell-behind issue is handled another way (TODO), not via ZShape.
-		(void)shp;
+		// NOTE: do NOT set ZShape here — feeding the tree SHP as the Z mask culled the
+		// blit entirely (disguise went invisible). Overhang handled another way (TODO).
+	}
+	else if (morphBlit != 0)
+	{
+		// Not swapping (unit shown), but the pulse is fading the real unit in/out:
+		// just OR in the translucency so it cross-fades with the tree.
+		R->Stack<DWORD>(0x14, R->Stack<DWORD>(0x14) | morphBlit);      // Flags
 	}
 	return 0;
 }
@@ -1036,7 +1064,7 @@ DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x6)
 DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
 {
 	GET(TechnoClass*, pThis, EBP);
-	if (MirageRenderAsTree(pThis)) // hide extras whenever it's drawn as a tree
+	if (MirageComputeMorph(pThis).DrawTree) // hide extras whenever it's drawn as a tree
 		return 0x6F5EE3; // skip chevrons/pips/health bar (incl. the owner pulse)
 	return 0;
 }
