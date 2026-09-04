@@ -919,8 +919,10 @@ DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 			& ~static_cast<DWORD>(BlitterFlags::Alpha));               // Flags: drop Alpha
 		R->Stack<int>(0x18, 0);                                        // Remap
 		R->Stack<int>(0x28, 0);                                        // TintColor
-		R->Stack<DWORD>(0x2C, shp);                                    // ZShape = tree
-		R->Stack<int>(0x30, 0);                                        // ZShapeFrame
+		// NOTE: do NOT set ZShape here — feeding the tree SHP as the Z mask made the
+		// blit cull itself (the disguise went fully invisible). The overhang-clipped-
+		// by-the-cell-behind issue is handled another way (TODO), not via ZShape.
+		(void)shp;
 	}
 	return 0;
 }
