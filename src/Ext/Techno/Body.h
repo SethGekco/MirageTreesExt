@@ -61,6 +61,12 @@ public:
 		// briefly morphs into a tree or drops off enemy targeting. Reset on move.
 		int MirageStillFrames;
 
+		// Consecutive frames the disguise has been active. Lets the auto-lock-drop
+		// wait until the unit has STAYED disguised, so an attacker doesn't lose its
+		// lock every time the target briefly stops (which left visible units un-shot
+		// during re-acquire). Reset to 0 whenever the disguise is off.
+		int MirageDisguisedFrames;
+
 		ExtData(TechnoClass* OwnerObject) : Extension<TechnoClass>(OwnerObject)
 			, MirageTrees {}
 			, MirageActive { false }
@@ -70,6 +76,7 @@ public:
 			, MirageDiagLogged { false }
 			, MirageRevealTimer { 0 }
 			, MirageStillFrames { 0 }
+			, MirageDisguisedFrames { 0 }
 		{ }
 
 		virtual ~ExtData() override;

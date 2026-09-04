@@ -302,16 +302,20 @@ DEFINE_HOOK(0x6FDD50, TechnoClass_Fire_MirageBlink, 0x6)
 	}
 
 	// Drop a stale AUTO-target lock. EvaluateObject only blocks NEW acquisition, so
-	// an enemy that locked this unit BEFORE it disguised keeps hammering it — the
-	// root of the "inconsistent auto-attack". If the firer is auto-attacking (NOT an
-	// explicit Attack/force-fire order) a now-disguised enemy, clear its target so
-	// it stops and re-evaluates (and can't re-acquire the hidden unit). Explicit
-	// orders — Mission::Attack, which is what force-fire uses — are left intact so
-	// the player can still Ctrl-fire a disguise.
+	// an enemy that locked this unit BEFORE it disguised keeps hammering it. But only
+	// drop once the target has STAYED disguised a while (MirageDisguisedFrames >=
+	// MirageLockDropDelay) — otherwise a unit that merely pauses for a moment made
+	// its attacker drop the lock and then lag to re-acquire when it moved again,
+	// leaving visible in-range units un-shot. If the firer is auto-attacking (NOT an
+	// explicit Attack/force-fire order) a durably-disguised enemy, clear its target
+	// so it stops and re-evaluates. Explicit orders (Mission::Attack, incl. force-
+	// fire) are left intact so the player can still Ctrl-fire a disguise.
+	constexpr int MirageLockDropDelay = 45; // ~sustained disguise before dropping
 	if (auto const pTgt = abstract_cast<TechnoClass*>(pTargetAbs))
 	{
 		auto const pTgtExt = TechnoExt::ExtMap.Find(pTgt);
 		if (pTgtExt && pTgtExt->MirageDisguiseActive
+			&& pTgtExt->MirageDisguisedFrames >= MirageLockDropDelay
 			&& pThis->CurrentMission != Mission::Attack
 			&& pThis->Owner && pTgt->Owner
 			&& pThis->Owner != pTgt->Owner
@@ -667,6 +671,24 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			pThis->Mark(MarkType::ChangeRedraw);
 	}
 
+	// Track how long the disguise has been continuously active (for the auto-lock-
+	// drop's sustained-disguise gate). Reset the instant it is not disguised.
+	if (pExt->MirageDisguiseActive)
+	{
+		if (pExt->MirageDisguisedFrames < 0x7FFF)
+			++pExt->MirageDisguisedFrames;
+
+		// The owner pulse flips the render unit<->tree on a 90-frame cycle (tree in
+		// [75,90)); on those two toggle frames dirty the overhang so the tall tree
+		// doesn't leave a partial top or a ghost when it swaps. (Cheap: 2 frames/90;
+		// harmless for the steady enemy-view tree.)
+		int const phase = Unsorted::CurrentFrame % 90;
+		if (phase == 0 || phase == 75)
+			DirtyDecoyArea(pThis->GetMapCoords(), 2);
+	}
+	else
+		pExt->MirageDisguisedFrames = 0;
+
 	// Decoys: separate scattered tree objects (independent of disguise).
 	if (pTypeExt->MirageDecoys)
 		UpdateDecoyForest(pThis, pExt, pTypeExt);
@@ -761,6 +783,46 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 
 	// Owner and allies see the real techno; everyone else sees the tree instead.
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
+}
+
+// Whether the CURRENT viewer should see this techno DRAWN as the tree. Used only by
+// the object-layer sprite-swap + the DrawExtras skip — NOT by targeting/tooltip/
+// selection (those stay enemy-only via MirageHiddenFromViewer, so the owner can
+// still select and command a disguised unit while it visually pulses).
+//   - enemies: always a tree.
+//   - owner / allies (per Mirage.FadeAudience): a brief periodic PULSE to the tree,
+//     ~1s of every ~5s, so the player can tell the unit is miraged — mirroring how
+//     a vanilla mirage tank periodically shows its owner the tree.
+static bool MirageRenderAsTree(TechnoClass* pThis)
+{
+	if (pThis->WhatAmI() == AbstractType::Unit)
+		return false; // units use the native field disguise
+
+	auto const pExt = TechnoExt::ExtMap.Find(pThis);
+	if (!pExt || !pExt->MirageDisguiseActive)
+		return false;
+
+	auto const pObs = HouseClass::CurrentPlayer;
+	if (!pObs || !pThis->Owner)
+		return false;
+
+	if (pObs != pThis->Owner && !pObs->IsAlliedWith(pThis->Owner))
+		return true; // enemy: always a tree
+
+	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+	if (!pTypeExt)
+		return false;
+
+	int const aud = pTypeExt->MirageFadeAudience;
+	bool const inAudience =
+		aud == AUD_ALL ||
+		(aud == AUD_OWNER && pObs == pThis->Owner) ||
+		(aud == AUD_ALLIES && (pObs == pThis->Owner || pObs->IsAlliedWith(pThis->Owner)));
+	if (!inAudience)
+		return false;
+
+	// ~1s tree in a ~5s cycle (frame-based, scales with game speed).
+	return (Unsorted::CurrentFrame % 90) >= 75;
 }
 
 // Give a disguised techno the "no interaction" cursor of a tree instead of the
@@ -866,7 +928,7 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	GET(TechnoClass*, pThis, ESI);
 
 	MirageMorphSHP = nullptr; // default: this object draws itself normally
-	if (MirageHiddenFromViewer(pThis))
+	if (MirageRenderAsTree(pThis)) // enemies always; owner/allies pulse periodically
 	{
 		auto const pExt = TechnoExt::ExtMap.Find(pThis);
 		auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
@@ -974,8 +1036,8 @@ DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x6)
 DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
 {
 	GET(TechnoClass*, pThis, EBP);
-	if (MirageHiddenFromViewer(pThis))
-		return 0x6F5EE3; // skip chevrons/pips/health bar for this enemy viewer
+	if (MirageRenderAsTree(pThis)) // hide extras whenever it's drawn as a tree
+		return 0x6F5EE3; // skip chevrons/pips/health bar (incl. the owner pulse)
 	return 0;
 }
 

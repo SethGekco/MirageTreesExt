@@ -30,6 +30,7 @@ void TechnoExt::ExtData::Serialize(T& Stm)
 		.Process(this->MirageAnchor)
 		.Process(this->MirageRevealTimer)
 		.Process(this->MirageStillFrames)
+		.Process(this->MirageDisguisedFrames)
 		;
 }
 
