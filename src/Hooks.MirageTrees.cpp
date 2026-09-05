@@ -841,19 +841,42 @@ static MirageMorph MirageComputeMorph(TechnoClass* pThis)
 	if (!inAudience)
 		return m; // owner not in audience → always the real unit
 
-	// 90-frame cycle (scales with game speed). 25/50/75 = increasing transparency.
+	// Fade SHAPE mirrors vanilla's one canonical translucency ramp,
+	// TechnoClass::GetVisualCharacter (gamemd 0x703860): it takes the transition
+	// progress, scales it x256 (const @0x7E1710) and buckets it at 64/128/192/255
+	// -> VisualType 1..5, i.e. equal quarter steps solid -> 25% -> 50% -> 75% ->
+	// gone. We reproduce that here as an owner-side PULSE: mostly the real unit,
+	// with a brief morph to the tree, cross-dissolving through the same 3 discrete
+	// blit-translucency levels (25/50/75) the engine uses, plus solid/hidden as the
+	// two endpoints. The fade SPEED is tunable via Mirage.FadePulseRate = frames
+	// per translucency step (default 15 -> ~0.75s fades, ~7s cycle at 60fps, which
+	// matches the reference footage's tank-then-tree cadence).
 	static const BlitterFlags fadeOut[3] = // solid -> gone
 		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
 	static const BlitterFlags fadeIn[3]  = // gone -> solid
 		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
 
-	int const phase = Unsorted::CurrentFrame % 90;
-	if (phase < 69)      { m.DrawTree = false; }                       // unit solid
-	else if (phase < 72) { m.DrawTree = false; m.Blit = fadeOut[phase - 69]; } // unit fades out
-	else if (phase < 75) { m.DrawTree = true;  m.Blit = fadeIn[phase - 72]; }  // tree fades in
-	else if (phase < 84) { m.DrawTree = true;  }                       // tree solid (~0.5s)
-	else if (phase < 87) { m.DrawTree = true;  m.Blit = fadeOut[phase - 84]; } // tree fades out
-	else                 { m.DrawTree = false; m.Blit = fadeIn[phase - 87]; }  // unit fades in
+	int step = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
+	if (step < 1) step = 1;
+	auto const idx = [step](int off) { int i = off / step; return i < 0 ? 0 : (i > 2 ? 2 : i); };
+
+	int const F         = 3 * step;      // frames to fade one direction (3 levels)
+	int const unitSolid = 12 * step;     // real unit shown (the long, common state)
+	int const treeSolid = 3 * step;      // tree shown (brief pulse)
+	int const s0 = unitSolid;            // unit solid  [0,   s0)
+	int const s1 = s0 + F;               // unit -> out [s0,  s1)
+	int const s2 = s1 + F;               // tree -> in  [s1,  s2)
+	int const s3 = s2 + treeSolid;       // tree solid  [s2,  s3)
+	int const s4 = s3 + F;               // tree -> out [s3,  s4)
+	int const cycle = s4 + F;            // unit -> in  [s4,  cycle)
+
+	int const phase = Unsorted::CurrentFrame % cycle;
+	if      (phase < s0) { m.DrawTree = false; }                                   // unit solid
+	else if (phase < s1) { m.DrawTree = false; m.Blit = fadeOut[idx(phase - s0)]; } // unit fades out
+	else if (phase < s2) { m.DrawTree = true;  m.Blit = fadeIn [idx(phase - s1)]; } // tree fades in
+	else if (phase < s3) { m.DrawTree = true;  }                                   // tree solid
+	else if (phase < s4) { m.DrawTree = true;  m.Blit = fadeOut[idx(phase - s3)]; } // tree fades out
+	else                 { m.DrawTree = false; m.Blit = fadeIn [idx(phase - s4)]; } // unit fades in
 
 	return m;
 }
