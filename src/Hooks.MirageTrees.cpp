@@ -851,16 +851,22 @@ static MirageMorph MirageComputeMorph(TechnoClass* pThis)
 	// two endpoints. The fade SPEED is tunable via Mirage.FadePulseRate = frames
 	// per translucency step (default 15 -> ~0.75s fades, ~7s cycle at 60fps, which
 	// matches the reference footage's tank-then-tree cadence).
-	static const BlitterFlags fadeOut[3] = // solid -> gone
-		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
-	static const BlitterFlags fadeIn[3]  = // gone -> solid
-		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+	// Cap at TL50, NOT TL75: because the pulse draws the unit OR the tree (never both
+	// in one frame), the fade is sequential, so the hand-off frame shows a single
+	// sprite alone at its most-transparent step. TL75 there reads as "real dark"
+	// (only 25% of the sprite over bare ground). TL50 keeps the hand-off bright while
+	// still cross-dissolving. (Vanilla can afford TL75 only because its ripple is a
+	// true multi-sprite blend and much faster.)
+	static const BlitterFlags fadeOut[2] = // solid -> gone
+		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50 };
+	static const BlitterFlags fadeIn[2]  = // gone -> solid
+		{ BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
 
 	int step = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
 	if (step < 1) step = 1;
-	auto const idx = [step](int off) { int i = off / step; return i < 0 ? 0 : (i > 2 ? 2 : i); };
+	auto const idx = [step](int off) { int i = off / step; return i < 0 ? 0 : (i > 1 ? 1 : i); };
 
-	int const F         = 3 * step;      // frames to fade one direction (3 levels)
+	int const F         = 2 * step;      // frames to fade one direction (2 levels)
 	int const unitSolid = 12 * step;     // real unit shown (the long, common state)
 	int const treeSolid = 3 * step;      // tree shown (brief pulse)
 	int const s0 = unitSolid;            // unit solid  [0,   s0)
@@ -1091,8 +1097,12 @@ DEFINE_HOOK(0x6F7CB1, TechnoClass_EvaluateObject_MirageUntarget, 0x6)
 DEFINE_HOOK(0x6F519B, TechnoClass_DrawExtras_MirageDisguise, 0x6)
 {
 	GET(TechnoClass*, pThis, EBP);
-	if (MirageComputeMorph(pThis).DrawTree) // hide extras whenever it's drawn as a tree
-		return 0x6F5EE3; // skip chevrons/pips/health bar (incl. the owner pulse)
+	// Hide extras ONLY from viewers who see a solid tree (enemies) — not during the
+	// owner's brief tree-pulse. Using DrawTree here made the owner's own health bar /
+	// selection box blink away every pulse, so a disguised pillbox felt unselectable.
+	// The owner keeps its extras through the whole pulse (that's the "this is mine" tell).
+	if (MirageHiddenFromViewer(pThis))
+		return 0x6F5EE3; // enemy view: skip chevrons/pips/health bar over the tree
 	return 0;
 }
 
@@ -1113,15 +1123,18 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 	// Only OUR decoys are in the registry; real map trees fall straight through.
 	if (DecoyRegistry.find(pThis) != DecoyRegistry.end())
 	{
-		// Don't render a decoy in a cell the current viewer can't actually see.
-		// Decoys are real TerrainClass objects, so without this they draw through
-		// black shroud, gap-generator shroud, and grey fog (and linger as ghosts
-		// after an area re-shrouds). Rendering only where there is live vision keeps
-		// them from appearing at the enemy's base / over the shroud. Redirect to the
-		// draw's own epilogue (0x71C353: pop edi/esi/ebp/ebx; add esp,0x14; ret 8) —
+		// Don't render a decoy under black shroud (they're real TerrainClass objects,
+		// so without this they'd draw over the shroud at the enemy's base). Redirect to
+		// the draw's own epilogue (0x71C353: pop edi/esi/ebp/ebx; add esp,0x14; ret 8) —
 		// the stack here is exactly that frame, so this cleanly skips tree + shadow.
+		//
+		// NOTE: only IsShrouded(), NOT IsFogged(). IsFogged() flickers true/false even
+		// for fully-visible cells (see the pillbox-flicker fix + broken YR fog layer),
+		// which made decoys strobe on/off and the terrain behind them "mess up". The
+		// cost is a decoy may linger through grey fog after you leave an area — a far
+		// rarer, milder artifact than constant flicker in your own base.
 		auto const pCell = pThis->GetCell();
-		if (!pCell || pCell->IsShrouded() || pCell->IsFogged())
+		if (!pCell || pCell->IsShrouded())
 			return 0x71C353;
 	}
 
