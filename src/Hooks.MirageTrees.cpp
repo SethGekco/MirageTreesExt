@@ -1004,6 +1004,10 @@ DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 			& ~static_cast<DWORD>(BlitterFlags::Alpha)) | morphBlit);  // Flags
 		R->Stack<int>(0x18, 0);                                        // Remap
 		R->Stack<int>(0x28, 0);                                        // TintColor
+		R->Stack<int>(0x24, 1000);                                     // Brightness (1000=normal)
+		// Force full brightness: the swap inherits the UNIT's brightness (dimmed by
+		// lighting/veterancy/etc.), which made morph trees on GIs & pillboxes render
+		// darker than the real map trees. Real trees always draw at 1000.
 		// NOTE: do NOT set ZShape here — feeding the tree SHP as the Z mask culled the
 		// blit entirely (disguise went invisible). Overhang handled another way (TODO).
 	}
@@ -1117,21 +1121,26 @@ DEFINE_HOOK(0x71C2DC, TerrainClass_Draw_MirageBlit, 0x6)
 	return 0;
 }
 
-// The shadow blit (0x71C34E) reuses the tree's flags in ESI, so our translucency
-// leaks onto the shadow and wrecks its darken palette. Strip the translucency
-// bits (TransLucent25/50/75 all live in mask 0x6) just AFTER the tree blit
-// (0x71C304) and before the shadow path, so only the tree fades.
+// The shadow blit (0x71C34E) reuses the tree's flags in ESI and, crucially,
+// IGNORES translucency (it uses a Darken blitter). So a decoy whose BODY is being
+// faded (the owner-side "this is a decoy" indicator) still casts a fully SOLID
+// shadow. Cluster a handful of decoys and their overlapping solid shadows pile
+// into a dark "box" that blots out whatever is behind them (e.g. the war factory).
 //
-// Hooked at the 5-byte `mov al,[0x822cf1]` right after the tree blit and return
-// 0 (safe continuation) — NOT the cramped 3-byte `or esi,1` at 0x71C325, whose
-// addr+size return landed on 0x71C328 and crashed (C0000005 @ 0x71C328).
+// Fix: a fading decoy shouldn't cast a shadow at all. When the body is faded
+// (CurrentDecoyBlit != None) jump straight to the draw epilogue
+// (0x71C353: pop edi/esi/ebp/ebx; add esp,0x14; ret 8) — the exact target the
+// game itself uses at 0x71C310 to skip the shadow when shadows are disabled, so
+// the stack frame here is valid for it. Solid decoys (CurrentDecoyBlit == None)
+// never take this branch and keep their normal shadow.
+//
+// Hooked at the 5-byte `mov al,[0x822cf1]` right after the tree blit — NOT the
+// cramped 3-byte `or esi,1` at 0x71C325, whose addr+size return landed on
+// 0x71C328 and crashed (C0000005 @ 0x71C328).
 DEFINE_HOOK(0x71C309, TerrainClass_Draw_MirageShadowFix, 0x5)
 {
 	if (CurrentDecoyBlit != BlitterFlags::None)
-	{
-		GET(DWORD, flags, ESI);
-		R->ESI(flags & ~0x6u); // clear our translucency; game then ORs in Darken
-	}
+		return 0x71C353; // faded decoy: skip the shadow draw entirely
 	return 0;
 }
 
