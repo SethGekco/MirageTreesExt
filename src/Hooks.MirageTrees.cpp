@@ -345,6 +345,14 @@ static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	if (!pCell || pCell->GetTerrain(false) != nullptr) // off-map or already treed
 		return false;
 
+	// Never drop a decoy on a cell another building occupies: a TerrainClass tree
+	// redraws its cell's ground and punches a flat "box" through the building behind
+	// it (the war-factory erase bug). Cover mode legitimately sits on the disguised
+	// techno's OWN footprint, so allow pThis's own building; reject any other.
+	if (auto const pBld = pCell->GetBuilding())
+		if (pBld != static_cast<void*>(pThis))
+			return false;
+
 	auto& random = ScenarioClass::Instance->Random;
 	auto const pTerrainType = disguises[random.RandomRanged(0, static_cast<int>(disguises.size()) - 1)];
 	if (!pTerrainType)
