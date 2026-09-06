@@ -849,34 +849,33 @@ static MirageMorph MirageComputeMorph(TechnoClass* pThis)
 	if (!inAudience)
 		return m; // owner not in audience → always the real unit
 
-	// Fade SHAPE mirrors vanilla's one canonical translucency ramp,
-	// TechnoClass::GetVisualCharacter (gamemd 0x703860): it takes the transition
-	// progress, scales it x256 (const @0x7E1710) and buckets it at 64/128/192/255
-	// -> VisualType 1..5, i.e. equal quarter steps solid -> 25% -> 50% -> 75% ->
-	// gone. We reproduce that here as an owner-side PULSE: mostly the real unit,
-	// with a brief morph to the tree, cross-dissolving through the same 3 discrete
-	// blit-translucency levels (25/50/75) the engine uses, plus solid/hidden as the
-	// two endpoints. The fade SPEED is tunable via Mirage.FadePulseRate = frames
-	// per translucency step (default 15 -> ~0.75s fades, ~7s cycle at 60fps, which
-	// matches the reference footage's tank-then-tree cadence).
-	// Cap at TL50, NOT TL75: because the pulse draws the unit OR the tree (never both
-	// in one frame), the fade is sequential, so the hand-off frame shows a single
-	// sprite alone at its most-transparent step. TL75 there reads as "real dark"
-	// (only 25% of the sprite over bare ground). TL50 keeps the hand-off bright while
-	// still cross-dissolving. (Vanilla can afford TL75 only because its ripple is a
-	// true multi-sprite blend and much faster.)
+	// Owner-side PULSE matched to the VANILLA mirage tank, measured frame-by-frame
+	// from Rex's reference GIFs: mostly the real unit, with a SHORT tree flash on a
+	// fast, frequent cycle (~1s period, tree visible only a fraction of it) — NOT the
+	// long slow tree-hold we had before.
+	//
+	// The fade itself is quick and FIXED (a couple frames per translucency level),
+	// mirroring the fast vanilla swap; Mirage.FadePulseRate now controls the PACE
+	// (the gap between flashes), so the tunable maps to the visible cadence without
+	// making the fade sluggish. Higher = slower/rarer pulse, lower = faster.
+	//
+	// Fade shape follows vanilla's ramp (GetVisualCharacter @0x703860: progress x256,
+	// buckets 64/128/192/255 = equal quarter steps). Capped at TL50, not TL75: the
+	// pulse draws unit XOR tree (never both), so the hand-off frame is a lone sprite
+	// at its most-transparent step; TL75 there read as "real dark", TL50 stays bright.
 	static const BlitterFlags fadeOut[2] = // solid -> gone
 		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50 };
 	static const BlitterFlags fadeIn[2]  = // gone -> solid
 		{ BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
 
-	int step = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
-	if (step < 1) step = 1;
-	auto const idx = [step](int off) { int i = off / step; return i < 0 ? 0 : (i > 1 ? 1 : i); };
+	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
+	if (rate < 1) rate = 1;
+	int const lvl = 2;                   // frames per translucency level: quick fade
+	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 1 ? 1 : i); };
 
-	int const F         = 2 * step;      // frames to fade one direction (2 levels)
-	int const unitSolid = 12 * step;     // real unit shown (the long, common state)
-	int const treeSolid = 3 * step;      // tree shown (brief pulse)
+	int const F         = 2 * lvl;       // 4-frame fade one direction (TL25->TL50)
+	int const treeSolid = 3 * lvl;       // brief tree flash (~6 frames)
+	int const unitSolid = 3 * rate;      // gap between flashes; the tunable = PACE
 	int const s0 = unitSolid;            // unit solid  [0,   s0)
 	int const s1 = s0 + F;               // unit -> out [s0,  s1)
 	int const s2 = s1 + F;               // tree -> in  [s1,  s2)
