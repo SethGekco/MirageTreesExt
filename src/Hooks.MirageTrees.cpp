@@ -344,19 +344,10 @@ static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
 	if (!pCell || pCell->GetTerrain(false) != nullptr) // off-map or already treed
 		return false;
-
-	// Never drop a decoy on a cell another building occupies: a TerrainClass tree
-	// redraws its cell's ground and punches a flat "box" through the building behind
-	// it (the war-factory erase bug). Cover mode legitimately sits on the disguised
-	// techno's OWN footprint, so allow pThis's own building; reject any other.
-	if (auto const pBld = pCell->GetBuilding())
-		if (pBld != static_cast<void*>(pThis))
-			return false;
-
-	// Likewise never spawn a decoy on a cell that already holds a unit or infantry —
-	// the tree would visually swallow (cover up) the real object sitting there.
-	if (pCell->GetUnit(false) || pCell->GetInfantry(false))
-		return false;
+	// NOTE: decoys are ALLOWED to overlap buildings/units — Rex wants a dense forest
+	// that can sit over the base. The old "erase a box through the war factory" bug is
+	// NOT a placement problem; it's the pulse's per-frame redraw blanking the building
+	// behind the tree's transparent pixels. Fixed in the pulse redraw (see below).
 
 	auto& random = ScenarioClass::Instance->Random;
 	auto const pTerrainType = disguises[random.RandomRanged(0, static_cast<int>(disguises.size()) - 1)];
@@ -738,9 +729,24 @@ static void UpdateDecoyForest(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		{
 			if (!pTree || TerrainClass::Array.FindItemIndex(pTree) == -1)
 				continue;
+			CellStruct const tc = pTree->GetMapCoords();
 			// Dirty a block so the tree's tall overhang repaints, not just its
 			// base cell (which left "half the image" stale).
-			DirtyDecoyArea(pTree->GetMapCoords(), 2);
+			DirtyDecoyArea(tc, 2);
+			// A pulsing (translucent) decoy sitting over a building blanks the
+			// building where the tree's TRANSPARENT pixels are: the per-frame partial
+			// cell redraw repaints ground, but the overhanging building isn't in that
+			// cell's redraw, so it vanishes and the tree's transparent pixels reveal
+			// bare ground (the "erased box", flickering as the building fights back).
+			// Force any nearby building to repaint in the SAME frame so it composites
+			// back correctly. Radius 4 covers a large building's overhang reaching the
+			// decoy's cell.
+			for (int dy = -4; dy <= 4; ++dy)
+				for (int dx = -4; dx <= 4; ++dx)
+					if (auto const pC = MapClass::Instance.TryGetCellAt(
+							CellStruct { static_cast<short>(tc.X + dx), static_cast<short>(tc.Y + dy) }))
+						if (auto const pB = pC->GetBuilding())
+							pB->Mark(MarkType::ChangeRedraw);
 		}
 	}
 }
