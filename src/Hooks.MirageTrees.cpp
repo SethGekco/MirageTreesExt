@@ -1036,14 +1036,19 @@ DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 		R->Stack<DWORD>(0x4, reinterpret_cast<DWORD>(MirageMorphSHP));  // SHP
 		R->Stack<int>(0x8, 0);                                         // FrameIndex
 		R->EDX(reinterpret_cast<DWORD>(MirageMorphPalette));           // Palette
-		R->Stack<DWORD>(0x14, (R->Stack<DWORD>(0x14)
-			& ~static_cast<DWORD>(BlitterFlags::Alpha)) | morphBlit);  // Flags
 		R->Stack<int>(0x18, 0);                                        // Remap
 		R->Stack<int>(0x28, 0);                                        // TintColor
 		R->Stack<int>(0x24, 1000);                                     // Brightness (1000=normal)
-		// Force full brightness: the swap inherits the UNIT's brightness (dimmed by
-		// lighting/veterancy/etc.), which made morph trees on GIs & pillboxes render
-		// darker than the real map trees. Real trees always draw at 1000.
+		// Flags: use the REAL-TREE blit flags, not the host unit/building's. A real
+		// tree draws with 0x2E00 (TerrainClass::Draw @0x71C2D0 — the 0x0E00 lighting
+		// bits + 0x2000). Inheriting the host's flags instead made the morph tree
+		// render DARK on infantry (GIs) and WASHED-OUT/translucent on buildings
+		// (pillbox), differently per theater — the snow bug. For fade frames drop
+		// Alpha (0x800, since Alpha + translucency mis-renders) and OR in the pulse.
+		DWORD const treeFlags = 0x2E00;
+		R->Stack<DWORD>(0x14, morphBlit
+			? ((treeFlags & ~static_cast<DWORD>(BlitterFlags::Alpha)) | morphBlit)
+			: treeFlags);                                              // Flags
 		// NOTE: do NOT set ZShape here — feeding the tree SHP as the Z mask culled the
 		// blit entirely (disguise went invisible). Overhang handled another way (TODO).
 	}
