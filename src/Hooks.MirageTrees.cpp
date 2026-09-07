@@ -353,6 +353,11 @@ static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 		if (pBld != static_cast<void*>(pThis))
 			return false;
 
+	// Likewise never spawn a decoy on a cell that already holds a unit or infantry —
+	// the tree would visually swallow (cover up) the real object sitting there.
+	if (pCell->GetUnit(false) || pCell->GetInfantry(false))
+		return false;
+
 	auto& random = ScenarioClass::Instance->Random;
 	auto const pTerrainType = disguises[random.RandomRanged(0, static_cast<int>(disguises.size()) - 1)];
 	if (!pTerrainType)
@@ -1039,13 +1044,19 @@ DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 		R->Stack<int>(0x18, 0);                                        // Remap
 		R->Stack<int>(0x28, 0);                                        // TintColor
 		R->Stack<int>(0x24, 1000);                                     // Brightness (1000=normal)
-		// Flags: use the REAL-TREE blit flags, not the host unit/building's. A real
-		// tree draws with 0x2E00 (TerrainClass::Draw @0x71C2D0 — the 0x0E00 lighting
-		// bits + 0x2000). Inheriting the host's flags instead made the morph tree
-		// render DARK on infantry (GIs) and WASHED-OUT/translucent on buildings
-		// (pillbox), differently per theater — the snow bug. For fade frames drop
-		// Alpha (0x800, since Alpha + translucency mis-renders) and OR in the pulse.
-		DWORD const treeFlags = 0x2E00;
+		// Flags: use the real tree's LIGHTING bits (0x0E00 = Alpha + the two theater
+		// lighting bits, from TerrainClass::Draw @0x71C2D0's 0x2E00) — NOT the host
+		// unit/building's flags, which rendered the tree dark on infantry and washed
+		// out on buildings, per theater (the snow bug).
+		//
+		// Deliberately WITHOUT the 0x2000 Z-shape bit that real trees also set: a real
+		// tree supplies its OWN silhouette as the Z-shape so it draws fully, but the
+		// morph inherits the HOST's Z-shape ([esp+0x2C]). A building's Z-shape is its
+		// short footprint, which clipped the tall tree to half ("part missing" on the
+		// pillbox). Dropping 0x2000 disables the Z-read so the whole tree paints;
+		// infantry (no clipping Z-shape) is unaffected. For fade frames also drop Alpha
+		// (Alpha + translucency mis-renders) and OR in the pulse.
+		DWORD const treeFlags = 0x0E00;
 		R->Stack<DWORD>(0x14, morphBlit
 			? ((treeFlags & ~static_cast<DWORD>(BlitterFlags::Alpha)) | morphBlit)
 			: treeFlags);                                              // Flags
