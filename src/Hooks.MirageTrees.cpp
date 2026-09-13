@@ -74,6 +74,14 @@ namespace
 
 	std::unordered_map<TerrainClass*, DecoyInfo> DecoyRegistry;
 
+	// Cover trees: real TerrainClass trees placed ON a disguised BUILDING's footprint.
+	// A building's own sprite draws in clipped foundation strips, so morphing it into a
+	// tall tree cut the tree in half. Instead we hide the building from viewers who
+	// should see the tree and let a REAL tree (which renders perfectly, like the
+	// decoys) stand in. Maps cover tree -> the source building; the building's flash
+	// state (MirageComputeMorph) decides per-viewer/frame whether the tree is drawn.
+	std::unordered_map<TerrainClass*, TechnoClass*> CoverRegistry;
+
 	// Decoys queued for deletion on the next safe frame. Deleting a TerrainClass
 	// from inside a techno's destructor cascade broadcasts pointer-invalidation
 	// (BuildingClass::Detach etc.) to the half-destroyed techno and crashes
@@ -374,6 +382,62 @@ static bool PlaceMirageTree(TechnoClass* pThis, TechnoExt::ExtData* pExt,
 	return true;
 }
 
+// Place one COVER tree on a disguised building's cell and link it to the building.
+// Unlike a decoy, a cover tree is drawn/hidden per the BUILDING's flash state (the
+// stash hook looks up CoverRegistry), so it stands in for the building's sprite.
+static void PlaceCoverTree(TechnoClass* pBld, TechnoExt::ExtData* pExt,
+	TerrainTypeClass* pType, CellStruct cell)
+{
+	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
+	if (!pCell || pCell->GetTerrain(false) != nullptr) // off-map or already treed
+		return;
+	auto const pTree = CreatePlacedTree(pType, cell);
+	if (!pTree)
+		return;
+	pExt->MirageTrees.push_back(pTree);
+	CoverRegistry[pTree] = pBld;
+	LogicClass::Instance.AddObject(pTree, false);
+	pTree->Mark(MarkType::ChangeRedraw);
+	DirtyDecoyArea(cell, 2);
+}
+
+// Ensure a disguised building has its cover tree(s) laid on its footprint. Idempotent
+// (no-op if one is already placed). The tree TYPE is persisted on the ext so a blink
+// or reveal never re-rolls the species.
+static void EnsureCoverTree(TechnoClass* pBld, TechnoExt::ExtData* pExt,
+	TechnoTypeExt::ExtData* pTypeExt)
+{
+	for (auto const pT : pExt->MirageTrees)
+		if (CoverRegistry.find(pT) != CoverRegistry.end())
+			return; // already covered
+
+	if (!pExt->MirageDisguiseTree)
+	{
+		auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
+			RulesClass::Instance->DefaultMirageDisguises);
+		if (disguises.size() > 0)
+			pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
+				0, static_cast<int>(disguises.size()) - 1)];
+	}
+	if (!pExt->MirageDisguiseTree)
+		return;
+
+	CellStruct const anchor = pBld->GetMapCoords();
+	int placed = 0;
+	if (auto pFound = pBld->GetFoundationData(false))
+	{
+		for (int guard = 0; guard < 64 && pFound->X != 0x7FFF && pFound->Y != 0x7FFF; ++pFound, ++guard)
+		{
+			CellStruct const c { static_cast<short>(anchor.X + pFound->X),
+								 static_cast<short>(anchor.Y + pFound->Y) };
+			PlaceCoverTree(pBld, pExt, pExt->MirageDisguiseTree, c);
+			++placed;
+		}
+	}
+	if (placed == 0)
+		PlaceCoverTree(pBld, pExt, pExt->MirageDisguiseTree, anchor);
+}
+
 void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 {
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
@@ -468,6 +532,7 @@ void TechnoExt::ClearMirageTreesFor(TechnoExt::ExtData* pExt, bool deferDelete)
 			continue;
 
 		DecoyRegistry.erase(pTree);
+		CoverRegistry.erase(pTree);
 
 		// Only touch trees the engine still knows about (a decoy the player
 		// shot down is already gone and was dropped via InvalidatePointer).
@@ -626,12 +691,21 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
 
-	// Non-unit disguise = PURE MORPH: no separate tree object. Pick a tree when it
-	// activates and flag it; the draw hook renders that TerrainType's sprite in the
-	// techno's place for enemy viewers (and skips the techno's own draw).
+	// Non-unit disguise. INFANTRY use the sprite-morph (their draw swaps to the tree).
+	// BUILDINGS use a real COVER tree (placed on the footprint), because a building's
+	// clipped strip-draw cut a morphed tall tree in half. Either way MirageDisguiseActive
+	// drives the per-viewer draw + the reveal-on-fire blink.
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
 	{
+		bool const isBuilding = pThis->WhatAmI() == AbstractType::Building;
 		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
+
+		// A disguised building keeps a persistent cover tree the WHOLE time it is a
+		// disguise candidate (even while momentarily revealed by fire — the reveal is a
+		// draw-time hide of the tree, not a teardown). Laid once; removed on death.
+		if (isBuilding && TechnoExt::ShouldHaveMirage(pThis))
+			EnsureCoverTree(pThis, pExt, pTypeExt);
+
 		if (shouldDisguise && !pExt->MirageDisguiseActive)
 		{
 			// Keep the same tree across a blink so re-disguising doesn't visibly
@@ -658,21 +732,22 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 		else if (!shouldDisguise && pExt->MirageDisguiseActive)
 		{
 			pExt->MirageDisguiseActive = false;
-			// A blink keeps the tree (re-disguise as the same one); any other
-			// deactivation (moved, died) forgets it so the next disguise re-rolls.
-			if (!MirageRevealed(pExt))
+			// Infantry (sprite-morph) re-rolls its tree each disguise; a building keeps
+			// its persistent cover tree, so never forget the species for buildings.
+			if (!isBuilding && !MirageRevealed(pExt))
 				pExt->MirageDisguiseTree = nullptr;
 			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
 			DirtyDecoyArea(pThis->GetMapCoords(), 2); // clear the tree's overhang
 		}
 
-		// The morph tree is only (re)drawn on frames the techno's own DrawObject
-		// runs — every frame for foot units (they animate), but buildings only
-		// redraw when their cell is dirtied, so a disguised BUILDING's tree blinks
-		// on and off. Keep a disguised building marked for redraw each frame so its
-		// tree is painted every frame, steady like an infantryman's.
-		if (pExt->MirageDisguiseActive && pThis->WhatAmI() == AbstractType::Building)
+		// Buildings only redraw when their cell is dirtied. Keep a disguised building
+		// (and its cover tree's overhang) repainting every frame so the flash animates
+		// smoothly and the building<->tree hand-off never leaves a stale sliver.
+		if (isBuilding && (pExt->MirageDisguiseActive || MirageRevealed(pExt)))
+		{
 			pThis->Mark(MarkType::ChangeRedraw);
+			DirtyDecoyArea(pThis->GetMapCoords(), 3);
+		}
 	}
 
 	// Track how long the disguise has been continuously active (for the auto-lock-
@@ -1009,6 +1084,26 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	GET(TechnoClass*, pThis, ESI);
 
 	auto const m = MirageComputeMorph(pThis);
+
+	// BUILDINGS: a real cover tree stands in for the disguise (a building's clipped
+	// strip-draw halved a morphed tall tree). So don't sprite-swap — just hide the
+	// building's OWN sprite whenever the cover tree should show (enemy always; owner/
+	// ally during the flash), and fade the building sprite on the transition frames.
+	if (pThis->WhatAmI() == AbstractType::Building)
+	{
+		MirageMorphSHP = nullptr;      // never swap a building's sprite
+		MirageMorphPalette = nullptr;
+		if (m.DrawTree)
+		{
+			MirageMorphBlit = BlitterFlags::None;
+			return 0x706602;           // skip the building's draw; the cover tree shows
+		}
+		MirageMorphBlit = m.Blit;      // building shown — fade it during the hand-off
+		return 0;
+	}
+
+	// Infantry/aircraft: the sprite-swap morph (renders full & correct, unlike a
+	// building's strip-clipped draw).
 	MirageMorphSHP     = m.DrawTree ? m.SHP : nullptr; // swap to the tree this frame?
 	MirageMorphPalette = m.Palette;
 	MirageMorphBlit    = m.Blit;                        // pulse-fade translucency (may be None)
@@ -1149,6 +1244,22 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 {
 	GET(TerrainClass*, pThis, ESI);
 
+	// COVER tree (building disguise): show/hide it per the source building's flash
+	// decision for the CURRENT viewer. MirageComputeMorph(building).DrawTree is true
+	// exactly when the building's own sprite is being hidden (enemy always; owner/ally
+	// during the flash), so the tree draws then — and fades with the same translucency.
+	if (auto const it = CoverRegistry.find(pThis); it != CoverRegistry.end())
+	{
+		auto const pCell = pThis->GetCell();
+		if (!pCell || pCell->IsShrouded())
+			return 0x71C353;
+		auto const m = MirageComputeMorph(it->second);
+		if (!m.DrawTree)
+			return 0x71C353;                       // building shown instead -> hide tree
+		CurrentDecoyBlit = m.Blit;                 // flash fade translucency (may be None)
+		return 0;
+	}
+
 	// Only OUR decoys are in the registry; real map trees fall straight through.
 	if (DecoyRegistry.find(pThis) != DecoyRegistry.end())
 	{
@@ -1216,6 +1327,7 @@ DEFINE_HOOK(0x71BB2C, TerrainClass_NowDead_MirageErase, 0x6)
 {
 	GET(TerrainClass*, pThis, ESI);
 	DecoyRegistry.erase(pThis);
+	CoverRegistry.erase(pThis);
 	// Also drop it from the deferred-delete queue so we never free it twice.
 	auto& q = PendingDecoyDeletes;
 	q.erase(std::remove(q.begin(), q.end(), pThis), q.end());
