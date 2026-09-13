@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include <AbstractClass.h>
 #include <TechnoClass.h>
 #include <TerrainClass.h>
 #include <GeneralStructures.h> // CellStruct
@@ -95,6 +96,28 @@ public:
 	public:
 		ExtContainer();
 		~ExtContainer();
+
+		// MUST be overridden or ExtData::InvalidatePointer is NEVER called.
+		//
+		// Container::PointerGotInvalid gates the whole invalidation pass behind
+		// InvalidateExtDataIgnorable, and the base implementation returns true
+		// (= ignore everything). Without this, the AnnounceInvalidPointer hook
+		// runs but dispatches nothing, so the MirageTrees list is never scrubbed
+		// and a destroyed decoy leaves a dangling TerrainClass* -- exactly what
+		// ExtData::InvalidatePointer was written to prevent.
+		//
+		// NOTE the type filter: we track TerrainClass, NOT technos. Copying the
+		// Unit/Infantry/Building/Aircraft filter used by the techno-holding DLLs
+		// would leave this bug fully intact.
+		//
+		// Found via SquadExt, which crashed in-game from the same omission
+		// (C0000005 at 0x5F6467, inside AbstractClass::DistanceFrom, on freed
+		// memory). An IsAlive-style guard is no defence: reading any field off a
+		// freed object is already undefined.
+		virtual bool InvalidateExtDataIgnorable(void* const ptr) const override
+		{
+			return static_cast<AbstractClass*>(ptr)->WhatAmI() != AbstractType::Terrain;
+		}
 	};
 
 	static ExtContainer ExtMap;
