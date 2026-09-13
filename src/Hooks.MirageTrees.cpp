@@ -980,6 +980,90 @@ static MirageMorph MirageComputeMorph(TechnoClass* pThis)
 	return m;
 }
 
+// BUILDING disguise flash as a TRUE CROSS-BLEND (matches the vanilla mirage look):
+// during the hand-off BOTH the building and its cover tree are on screen at once,
+// fading in opposite directions through the full 25/50/75 ramp so they sum to full
+// opacity (no dark lone-sprite frame, so we can use the full ramp vanilla uses). The
+// building draw reads BuildingVisible/BuildingBlit; the cover tree reads the Tree
+// pair. Enemy: tree only, solid. Owner/allies (in audience): the cross-blend pulse.
+// Not disguised / revealed / out of audience: the real building, solid.
+struct MirageXFade { bool BuildingVisible; BlitterFlags BuildingBlit; bool TreeVisible; BlitterFlags TreeBlit; };
+
+static MirageXFade MirageBuildingXFade(TechnoClass* pBld)
+{
+	MirageXFade x { true, BlitterFlags::None, false, BlitterFlags::None }; // default: building only
+
+	auto const pExt = TechnoExt::ExtMap.Find(pBld);
+	if (!pExt || !pExt->MirageDisguiseActive)
+		return x; // revealed (firing) or not disguised → show the real building to all
+
+	auto const pObs = HouseClass::CurrentPlayer;
+	if (!pObs || !pBld->Owner)
+		return x;
+
+	// Enemy: the cover tree only, solid.
+	if (pObs != pBld->Owner && !pObs->IsAlliedWith(pBld->Owner))
+	{
+		x.BuildingVisible = false;
+		x.TreeVisible = true;
+		return x;
+	}
+
+	// Owner / allies: only flash if in the fade audience; else always the building.
+	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pBld->GetTechnoType());
+	int const aud = pTypeExt ? pTypeExt->MirageFadeAudience : 0;
+	bool const inAudience =
+		aud == AUD_ALL ||
+		(aud == AUD_OWNER && pObs == pBld->Owner) ||
+		(aud == AUD_ALLIES && (pObs == pBld->Owner || pObs->IsAlliedWith(pBld->Owner)));
+	if (!inAudience)
+		return x;
+
+	// Full 25/50/75 ramp (safe here because the two sprites overlap and sum to solid).
+	static const BlitterFlags fadeOut[3] = // solid -> gone
+		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
+	static const BlitterFlags fadeIn[3]  = // gone -> solid
+		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+
+	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
+	if (rate < 1) rate = 1;
+	int const lvl = 2;                    // frames per translucency level (quick fade)
+	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 2 ? 2 : i); };
+
+	int const F         = 3 * lvl;        // 6-frame fade (3 levels)
+	int const treeSolid = 3 * lvl;        // brief tree hold
+	int const unitSolid = 3 * rate;       // gap between flashes; the tunable = PACE
+	int const s0 = unitSolid;             // building solid, tree hidden
+	int const s1 = s0 + F;                // CROSS-BLEND: building out + tree in
+	int const s2 = s1 + treeSolid;        // tree solid, building hidden
+	int const cycle = s2 + F;             // CROSS-BLEND: tree out + building in
+
+	int const phase = Unsorted::CurrentFrame % cycle;
+	if (phase < s0)
+	{
+		// building solid, tree hidden (default x)
+	}
+	else if (phase < s1)                  // fade toward the tree — both drawn
+	{
+		int const o = phase - s0;
+		x.BuildingVisible = true;  x.BuildingBlit = fadeOut[idx(o)];
+		x.TreeVisible     = true;  x.TreeBlit     = fadeIn [idx(o)];
+	}
+	else if (phase < s2)                  // tree fully shown
+	{
+		x.BuildingVisible = false;
+		x.TreeVisible     = true;
+	}
+	else                                  // fade back to the building — both drawn
+	{
+		int const o = phase - s2;
+		x.BuildingVisible = true;  x.BuildingBlit = fadeIn [idx(o)];
+		x.TreeVisible     = true;  x.TreeBlit     = fadeOut[idx(o)];
+	}
+
+	return x;
+}
+
 // Give a disguised techno the "no interaction" cursor of a tree instead of the
 // selectable-object cursor, for the enemy viewers who see it as a tree. The hover
 // cursor's SELECT action is gated on ObjectClass::CanBeSelected — whose shared core
@@ -1083,27 +1167,28 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
 
-	auto const m = MirageComputeMorph(pThis);
-
 	// BUILDINGS: a real cover tree stands in for the disguise (a building's clipped
-	// strip-draw halved a morphed tall tree). So don't sprite-swap — just hide the
-	// building's OWN sprite whenever the cover tree should show (enemy always; owner/
-	// ally during the flash), and fade the building sprite on the transition frames.
+	// strip-draw halved a morphed tall tree). Don't sprite-swap — CROSS-BLEND the
+	// building's own sprite against the cover tree: hide the building only when the
+	// tree is fully shown, else draw it, fading it on the hand-off so both overlap
+	// (the cover tree carries the complementary fade). Matches the vanilla look.
 	if (pThis->WhatAmI() == AbstractType::Building)
 	{
 		MirageMorphSHP = nullptr;      // never swap a building's sprite
 		MirageMorphPalette = nullptr;
-		if (m.DrawTree)
+		auto const x = MirageBuildingXFade(pThis);
+		if (!x.BuildingVisible)
 		{
 			MirageMorphBlit = BlitterFlags::None;
-			return 0x706602;           // skip the building's draw; the cover tree shows
+			return 0x706602;           // building fully hidden; the cover tree shows
 		}
-		MirageMorphBlit = m.Blit;      // building shown — fade it during the hand-off
+		MirageMorphBlit = x.BuildingBlit; // building shown — fading during the cross-blend
 		return 0;
 	}
 
 	// Infantry/aircraft: the sprite-swap morph (renders full & correct, unlike a
 	// building's strip-clipped draw).
+	auto const m = MirageComputeMorph(pThis);
 	MirageMorphSHP     = m.DrawTree ? m.SHP : nullptr; // swap to the tree this frame?
 	MirageMorphPalette = m.Palette;
 	MirageMorphBlit    = m.Blit;                        // pulse-fade translucency (may be None)
@@ -1244,19 +1329,19 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 {
 	GET(TerrainClass*, pThis, ESI);
 
-	// COVER tree (building disguise): show/hide it per the source building's flash
-	// decision for the CURRENT viewer. MirageComputeMorph(building).DrawTree is true
-	// exactly when the building's own sprite is being hidden (enemy always; owner/ally
-	// during the flash), so the tree draws then — and fades with the same translucency.
+	// COVER tree (building disguise): draw it per the source building's CROSS-BLEND
+	// state for the CURRENT viewer. TreeVisible is true whenever the tree contributes
+	// this frame (enemy always; owner/ally during the flash + both hand-off fades);
+	// TreeBlit is its complementary translucency so it blends with the fading building.
 	if (auto const it = CoverRegistry.find(pThis); it != CoverRegistry.end())
 	{
 		auto const pCell = pThis->GetCell();
 		if (!pCell || pCell->IsShrouded())
 			return 0x71C353;
-		auto const m = MirageComputeMorph(it->second);
-		if (!m.DrawTree)
+		auto const x = MirageBuildingXFade(it->second);
+		if (!x.TreeVisible)
 			return 0x71C353;                       // building shown instead -> hide tree
-		CurrentDecoyBlit = m.Blit;                 // flash fade translucency (may be None)
+		CurrentDecoyBlit = x.TreeBlit;             // complementary cross-blend translucency
 		return 0;
 	}
 
