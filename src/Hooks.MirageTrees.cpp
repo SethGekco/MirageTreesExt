@@ -1017,6 +1017,7 @@ static MirageXFade MirageBuildingXFade(TechnoClass* pBld)
 	// tree (drawn once, cached, no erase), owner = the real building. Restoring the
 	// owner flash needs a manual object-layer tree blit (TODO); until then, no flash.
 	return x; // building shown to owner/allies
+}
 
 // Give a disguised techno the "no interaction" cursor of a tree instead of the
 // selectable-object cursor, for the enemy viewers who see it as a tree. The hover
