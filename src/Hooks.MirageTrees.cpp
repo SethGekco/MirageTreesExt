@@ -740,14 +740,11 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			DirtyDecoyArea(pThis->GetMapCoords(), 2); // clear the tree's overhang
 		}
 
-		// Buildings only redraw when their cell is dirtied. Keep a disguised building
-		// (and its cover tree's overhang) repainting every frame so the flash animates
-		// smoothly and the building<->tree hand-off never leaves a stale sliver.
-		if (isBuilding && (pExt->MirageDisguiseActive || MirageRevealed(pExt)))
-		{
-			pThis->Mark(MarkType::ChangeRedraw);
-			DirtyDecoyArea(pThis->GetMapCoords(), 3);
-		}
+		// NO per-frame redraw for a disguised building. The cover tree is now static
+		// (enemy sees a solid tree, owner sees the building — no flash), so it draws
+		// once and stays cached. Re-dirtying it every frame was what blanked the objects
+		// overhanging it. The activate/deactivate branches above dirty on the reveal
+		// transitions, which is all that's needed.
 	}
 
 	// Track how long the disguise has been continuously active (for the auto-lock-
@@ -1009,60 +1006,17 @@ static MirageXFade MirageBuildingXFade(TechnoClass* pBld)
 		return x;
 	}
 
-	// Owner / allies: only flash if in the fade audience; else always the building.
-	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pBld->GetTechnoType());
-	int const aud = pTypeExt ? pTypeExt->MirageFadeAudience : 0;
-	bool const inAudience =
-		aud == AUD_ALL ||
-		(aud == AUD_OWNER && pObs == pBld->Owner) ||
-		(aud == AUD_ALLIES && (pObs == pBld->Owner || pObs->IsAlliedWith(pBld->Owner)));
-	if (!inAudience)
-		return x;
-
-	// Full 25/50/75 ramp (safe here because the two sprites overlap and sum to solid).
-	static const BlitterFlags fadeOut[3] = // solid -> gone
-		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
-	static const BlitterFlags fadeIn[3]  = // gone -> solid
-		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
-
-	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
-	if (rate < 1) rate = 1;
-	int const lvl = 2;                    // frames per translucency level (quick fade)
-	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 2 ? 2 : i); };
-
-	int const F         = 3 * lvl;        // 6-frame fade (3 levels)
-	int const treeSolid = 3 * lvl;        // brief tree hold
-	int const unitSolid = 3 * rate;       // gap between flashes; the tunable = PACE
-	int const s0 = unitSolid;             // building solid, tree hidden
-	int const s1 = s0 + F;                // CROSS-BLEND: building out + tree in
-	int const s2 = s1 + treeSolid;        // tree solid, building hidden
-	int const cycle = s2 + F;             // CROSS-BLEND: tree out + building in
-
-	int const phase = Unsorted::CurrentFrame % cycle;
-	if (phase < s0)
-	{
-		// building solid, tree hidden (default x)
-	}
-	else if (phase < s1)                  // fade toward the tree — both drawn
-	{
-		int const o = phase - s0;
-		x.BuildingVisible = true;  x.BuildingBlit = fadeOut[idx(o)];
-		x.TreeVisible     = true;  x.TreeBlit     = fadeIn [idx(o)];
-	}
-	else if (phase < s2)                  // tree fully shown
-	{
-		x.BuildingVisible = false;
-		x.TreeVisible     = true;
-	}
-	else                                  // fade back to the building — both drawn
-	{
-		int const o = phase - s2;
-		x.BuildingVisible = true;  x.BuildingBlit = fadeIn [idx(o)];
-		x.TreeVisible     = true;  x.TreeBlit     = fadeOut[idx(o)];
-	}
-
-	return x;
-}
+	// Owner / allies: they see the real BUILDING (no periodic tree flash).
+	//
+	// The vanilla-style owner flash would cross-blend the building against the cover
+	// tree, but that requires redrawing the cover tree's cells every frame, and RA2's
+	// partial cell redraw blanks any object overhanging the tree (the "erases things
+	// behind it" bug — same reason the animated decoys erased, and why solid decoys
+	// look clean). Infantry escape this (object-layer sprite), buildings cannot
+	// (strip-clipped draw). So a building's disguise is static: enemy = solid cover
+	// tree (drawn once, cached, no erase), owner = the real building. Restoring the
+	// owner flash needs a manual object-layer tree blit (TODO); until then, no flash.
+	return x; // building shown to owner/allies
 
 // Give a disguised techno the "no interaction" cursor of a tree instead of the
 // selectable-object cursor, for the enemy viewers who see it as a tree. The hover
