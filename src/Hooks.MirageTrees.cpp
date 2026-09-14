@@ -438,6 +438,35 @@ static void EnsureCoverTree(TechnoClass* pBld, TechnoExt::ExtData* pExt,
 		PlaceCoverTree(pBld, pExt, pExt->MirageDisguiseTree, anchor);
 }
 
+// Tear down only the COVER trees a techno owns (leaving any decoys). Used when an
+// INFANTRY disguise ends because it moved (buildings keep theirs until death). Runs
+// from the per-frame driver, so inline free is safe.
+static void RemoveCoverTrees(TechnoExt::ExtData* pExt)
+{
+	if (!pExt)
+		return;
+	auto& trees = pExt->MirageTrees;
+	for (auto it = trees.begin(); it != trees.end(); )
+	{
+		auto const pTree = *it;
+		if (pTree && CoverRegistry.find(pTree) != CoverRegistry.end())
+		{
+			CoverRegistry.erase(pTree);
+			if (TerrainClass::Array.FindItemIndex(pTree) != -1)
+			{
+				CellStruct const cell = pTree->GetMapCoords();
+				LogicClass::Instance.RemoveObject(pTree);
+				pTree->Limbo();
+				GameDelete(pTree);
+				DirtyDecoyArea(cell, 2);
+			}
+			it = trees.erase(it);
+		}
+		else
+			++it;
+	}
+}
+
 void TechnoExt::SpawnMirageTrees(TechnoClass* pThis)
 {
 	auto const pExt = TechnoExt::ExtMap.Find(pThis);
@@ -691,59 +720,46 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() == AbstractType::Unit)
 		UpdateMirageDisguise(pThis, pExt, pTypeExt);
 
-	// Non-unit disguise. INFANTRY use the sprite-morph (their draw swaps to the tree).
-	// BUILDINGS use a real COVER tree (placed on the footprint), because a building's
-	// clipped strip-draw cut a morphed tall tree in half. Either way MirageDisguiseActive
-	// drives the per-viewer draw + the reveal-on-fire blink.
+	// Non-unit disguise (buildings AND infantry) = a real COVER tree cross-blended
+	// against the techno's own sprite. Unified: a building's clipped strip-draw halved
+	// a morphed tall tree, and the cover tree also gives infantry the same true
+	// cross-blend as the pillbox. MirageDisguiseActive drives the per-viewer draw +
+	// the reveal-on-fire blink; the cover tree is placed while the techno is a disguise
+	// candidate and torn down when it stops being one (infantry that walked off).
 	if (pTypeExt->MirageDisguise && pThis->WhatAmI() != AbstractType::Unit)
 	{
-		bool const isBuilding = pThis->WhatAmI() == AbstractType::Building;
-		bool const shouldDisguise = TechnoExt::ShouldHaveMirage(pThis) && !MirageRevealed(pExt);
+		bool const canDisguise = TechnoExt::ShouldHaveMirage(pThis); // alive + still (ignores blink)
+		bool const shouldDisguise = canDisguise && !MirageRevealed(pExt);
 
-		// A disguised building keeps a persistent cover tree the WHOLE time it is a
-		// disguise candidate (even while momentarily revealed by fire — the reveal is a
-		// draw-time hide of the tree, not a teardown). Laid once; removed on death.
-		if (isBuilding && TechnoExt::ShouldHaveMirage(pThis))
+		// Lay the cover tree whenever this techno is a disguise candidate (even while
+		// momentarily revealed by fire — the reveal is a draw-time hide, not a teardown).
+		// Infantry that walks off (canDisguise=false) drops its cover tree; a building
+		// keeps its until death.
+		if (canDisguise)
 			EnsureCoverTree(pThis, pExt, pTypeExt);
+		else
+			RemoveCoverTrees(pExt);
 
 		if (shouldDisguise && !pExt->MirageDisguiseActive)
 		{
-			// Keep the same tree across a blink so re-disguising doesn't visibly
-			// swap species (a tell); only roll a fresh one when we have none.
-			if (!pExt->MirageDisguiseTree)
-			{
-				auto const& disguises = pTypeExt->MirageDefaultDisguises.GetElements(
-					RulesClass::Instance->DefaultMirageDisguises);
-				if (disguises.size() > 0)
-					pExt->MirageDisguiseTree = disguises[ScenarioClass::Instance->Random.RandomRanged(
-						0, static_cast<int>(disguises.size()) - 1)];
-			}
-			if (pExt->MirageDisguiseTree)
+			if (pExt->MirageDisguiseTree) // EnsureCoverTree already rolled/persisted it
 			{
 				pExt->MirageDisguiseActive = true;
-				pThis->Mark(MarkType::ChangeRedraw); // repaint: unit -> tree
-				// The tree sprite overhangs its cell (foliage rises north on screen);
-				// Mark only dirties the unit's own cell, leaving the overhang cells
-				// stale (tree drawn only partially until you nudge the view). Dirty a
-				// block so the whole tree paints, and later fully clears.
+				pThis->Mark(MarkType::ChangeRedraw);
 				DirtyDecoyArea(pThis->GetMapCoords(), 2);
 			}
 		}
 		else if (!shouldDisguise && pExt->MirageDisguiseActive)
 		{
 			pExt->MirageDisguiseActive = false;
-			// Infantry (sprite-morph) re-rolls its tree each disguise; a building keeps
-			// its persistent cover tree, so never forget the species for buildings.
-			if (!isBuilding && !MirageRevealed(pExt))
-				pExt->MirageDisguiseTree = nullptr;
-			pThis->Mark(MarkType::ChangeRedraw); // repaint: tree -> unit
-			DirtyDecoyArea(pThis->GetMapCoords(), 2); // clear the tree's overhang
+			pThis->Mark(MarkType::ChangeRedraw);
+			DirtyDecoyArea(pThis->GetMapCoords(), 2);
 		}
 
-		// Buildings only redraw when their cell is dirtied. Keep a disguised building
-		// (and its cover tree's overhang) repainting every frame so the flash animates
-		// smoothly and the building<->tree hand-off never leaves a stale sliver.
-		if (isBuilding && (pExt->MirageDisguiseActive || MirageRevealed(pExt)))
+		// The cover tree + the sprite animate every frame (flash cross-blend). Buildings
+		// and stationary infantry only redraw when dirtied, so keep the block repainting
+		// while disguised or revealed, or the hand-off leaves a stale sliver.
+		if (pExt->MirageDisguiseActive || MirageRevealed(pExt))
 		{
 			pThis->Mark(MarkType::ChangeRedraw);
 			DirtyDecoyArea(pThis->GetMapCoords(), 3);
@@ -878,106 +894,6 @@ static bool MirageHiddenFromViewer(TechnoClass* pThis)
 
 	// Owner and allies see the real techno; everyone else sees the tree instead.
 	return pObserver != pThis->Owner && !pObserver->IsAlliedWith(pThis->Owner);
-}
-
-// How the CURRENT viewer sees a disguised techno THIS frame. Used only by the
-// object-layer sprite-swap + the DrawExtras skip — NOT by targeting/tooltip/
-// selection (those stay enemy-only via MirageHiddenFromViewer, so the owner can
-// still select/command it while it visually pulses).
-//   - enemies: always a solid tree.
-//   - owner / allies (per Mirage.FadeAudience): a periodic CROSS-FADE pulse — the
-//     unit fades out, the tree fades in, holds ~0.5s, fades out, unit fades in — so
-//     the player can tell it's miraged without a hard pop (like a vanilla mirage
-//     tank). DrawTree = swap to the tree this frame; Blit = extra translucency to OR
-//     into the blit flags (applied to the tree when DrawTree, else to the unit).
-struct MirageMorph { bool DrawTree; SHPStruct* SHP; ConvertClass* Palette; BlitterFlags Blit; };
-
-static MirageMorph MirageComputeMorph(TechnoClass* pThis)
-{
-	MirageMorph m { false, nullptr, nullptr, BlitterFlags::None };
-
-	if (pThis->WhatAmI() == AbstractType::Unit)
-		return m; // units use the native field disguise
-
-	auto const pExt = TechnoExt::ExtMap.Find(pThis);
-	if (!pExt || !pExt->MirageDisguiseActive)
-		return m;
-
-	auto const pObs = HouseClass::CurrentPlayer;
-	if (!pObs || !pThis->Owner)
-		return m;
-
-	auto const pTreeType = pExt->MirageDisguiseTree;
-	auto const pImage = pTreeType ? pTreeType->GetImage() : nullptr;
-	auto const pCell = pThis->GetCell();
-	if (!pImage || !pCell || pCell->IsShrouded())
-		return m; // nothing to draw / viewer can't see the cell
-
-	m.SHP = pImage;
-	m.Palette = pCell->LightConvert
-		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
-		: FileSystem::UNITx_PAL;
-
-	// Enemy: always a solid tree, no fade.
-	if (pObs != pThis->Owner && !pObs->IsAlliedWith(pThis->Owner))
-	{
-		m.DrawTree = true;
-		return m;
-	}
-
-	// Owner / allies in the fade audience: the periodic cross-fade pulse.
-	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
-	int const aud = pTypeExt ? pTypeExt->MirageFadeAudience : 0;
-	bool const inAudience =
-		aud == AUD_ALL ||
-		(aud == AUD_OWNER && pObs == pThis->Owner) ||
-		(aud == AUD_ALLIES && (pObs == pThis->Owner || pObs->IsAlliedWith(pThis->Owner)));
-	if (!inAudience)
-		return m; // owner not in audience → always the real unit
-
-	// Owner-side PULSE matched to the VANILLA mirage tank, measured frame-by-frame
-	// from Rex's reference GIFs: mostly the real unit, with a SHORT tree flash on a
-	// fast, frequent cycle (~1s period, tree visible only a fraction of it) — NOT the
-	// long slow tree-hold we had before.
-	//
-	// The fade itself is quick and FIXED (a couple frames per translucency level),
-	// mirroring the fast vanilla swap; Mirage.FadePulseRate now controls the PACE
-	// (the gap between flashes), so the tunable maps to the visible cadence without
-	// making the fade sluggish. Higher = slower/rarer pulse, lower = faster.
-	//
-	// Fade shape follows vanilla's ramp (GetVisualCharacter @0x703860: progress x256,
-	// buckets 64/128/192/255 = equal quarter steps). Capped at TL50, not TL75: the
-	// pulse draws unit XOR tree (never both), so the hand-off frame is a lone sprite
-	// at its most-transparent step; TL75 there read as "real dark", TL50 stays bright.
-	static const BlitterFlags fadeOut[2] = // solid -> gone
-		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50 };
-	static const BlitterFlags fadeIn[2]  = // gone -> solid
-		{ BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
-
-	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
-	if (rate < 1) rate = 1;
-	int const lvl = 2;                   // frames per translucency level: quick fade
-	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 1 ? 1 : i); };
-
-	int const F         = 2 * lvl;       // 4-frame fade one direction (TL25->TL50)
-	int const treeSolid = 3 * lvl;       // brief tree flash (~6 frames)
-	int const unitSolid = 3 * rate;      // gap between flashes; the tunable = PACE
-	int const s0 = unitSolid;            // unit solid  [0,   s0)
-	int const s1 = s0 + F;               // unit -> out [s0,  s1)
-	int const s2 = s1 + F;               // tree -> in  [s1,  s2)
-	int const s3 = s2 + treeSolid;       // tree solid  [s2,  s3)
-	int const s4 = s3 + F;               // tree -> out [s3,  s4)
-	int const cycle = s4 + F;            // unit -> in  [s4,  cycle)
-
-	int const phase = Unsorted::CurrentFrame % cycle;
-	if      (phase < s0) { m.DrawTree = false; }                                   // unit solid
-	else if (phase < s1) { m.DrawTree = false; m.Blit = fadeOut[idx(phase - s0)]; } // unit fades out
-	else if (phase < s2) { m.DrawTree = true;  m.Blit = fadeIn [idx(phase - s1)]; } // tree fades in
-	else if (phase < s3) { m.DrawTree = true;  }                                   // tree solid
-	else if (phase < s4) { m.DrawTree = true;  m.Blit = fadeOut[idx(phase - s3)]; } // tree fades out
-	else                 { m.DrawTree = false; m.Blit = fadeIn [idx(phase - s4)]; } // unit fades in
-
-	return m;
 }
 
 // BUILDING disguise flash as a TRUE CROSS-BLEND (matches the vanilla mirage look):
@@ -1167,32 +1083,25 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 {
 	GET(TechnoClass*, pThis, ESI);
 
-	// BUILDINGS: a real cover tree stands in for the disguise (a building's clipped
-	// strip-draw halved a morphed tall tree). Don't sprite-swap — CROSS-BLEND the
-	// building's own sprite against the cover tree: hide the building only when the
-	// tree is fully shown, else draw it, fading it on the hand-off so both overlap
-	// (the cover tree carries the complementary fade). Matches the vanilla look.
-	if (pThis->WhatAmI() == AbstractType::Building)
-	{
-		MirageMorphSHP = nullptr;      // never swap a building's sprite
-		MirageMorphPalette = nullptr;
-		auto const x = MirageBuildingXFade(pThis);
-		if (!x.BuildingVisible)
-		{
-			MirageMorphBlit = BlitterFlags::None;
-			return 0x706602;           // building fully hidden; the cover tree shows
-		}
-		MirageMorphBlit = x.BuildingBlit; // building shown — fading during the cross-blend
+	// Mirage UNITS use the engine's native field disguise; leave them alone.
+	if (pThis->WhatAmI() == AbstractType::Unit)
 		return 0;
-	}
 
-	// Infantry/aircraft: the sprite-swap morph (renders full & correct, unlike a
-	// building's strip-clipped draw).
-	auto const m = MirageComputeMorph(pThis);
-	MirageMorphSHP     = m.DrawTree ? m.SHP : nullptr; // swap to the tree this frame?
-	MirageMorphPalette = m.Palette;
-	MirageMorphBlit    = m.Blit;                        // pulse-fade translucency (may be None)
-	return 0; // let the techno draw itself; CC_Draw_Shape paints it as the tree / fades it
+	// BUILDINGS and INFANTRY both disguise via a real COVER tree cross-blended against
+	// their own sprite (a building's clipped strip-draw halved a morphed tall tree; the
+	// cover tree also gives infantry the same true cross-blend). Don't sprite-swap —
+	// hide the techno's own sprite only when the tree is fully shown, else draw it,
+	// fading it on the hand-off so it overlaps the cover tree's complementary fade.
+	MirageMorphSHP = nullptr;          // no sprite swap anymore
+	MirageMorphPalette = nullptr;
+	auto const x = MirageBuildingXFade(pThis);
+	if (!x.BuildingVisible)
+	{
+		MirageMorphBlit = BlitterFlags::None;
+		return 0x706602;               // techno fully hidden; the cover tree shows
+	}
+	MirageMorphBlit = x.BuildingBlit;  // techno shown — fading during the cross-blend
+	return 0;
 }
 
 // Clear the swap when the techno's DrawObject returns (0x706602 = its epilogue:
