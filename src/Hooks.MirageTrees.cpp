@@ -1530,8 +1530,13 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 	if (auto const it = CoverRegistry.find(pThis); it != CoverRegistry.end())
 	{
 		auto const pCell = pThis->GetCell();
-		if (!pCell || pCell->IsShrouded())
+		if (!pCell)
 			return 0x71C353;
+		// Deliberately NO shroud/fog skip for the COVER tree (the building's disguise).
+		// IntelExt's fog was tripping IsShrouded() and making the disguise vanish under
+		// fog — worse than a real tree, which persists (remembered) under fog. Since the
+		// two DLLs are independent, keep the disguise drawn regardless of shroud/fog so it
+		// behaves like standing terrain and stays compatible with any vision system.
 		auto const x = MirageBuildingXFade(it->second);
 		if (!x.TreeVisible)
 			return 0x71C353;                       // building shown instead -> hide tree
