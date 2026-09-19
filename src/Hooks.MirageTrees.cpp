@@ -1216,7 +1216,8 @@ static MirageFlashState MirageComputeFlash(TechnoClass* pThis)
 
 	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
 	if (rate < 1) rate = 1;
-	int const lvl = 2;
+	int lvl = pTypeExt ? pTypeExt->MirageFadeDissolveRate : 2; // frames per translucency level
+	if (lvl < 1) lvl = 1;
 	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 2 ? 2 : i); };
 
 	int const F         = 3 * lvl;   // 6-frame fade (3 levels)

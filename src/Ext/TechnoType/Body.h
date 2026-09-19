@@ -74,6 +74,11 @@ public:
 		// Mirage.FadePulseRate : frames per translucency step when pulsing.
 		Valueable<int> MirageFadePulseRate;
 
+		// Mirage.FadeDissolveRate : frames per translucency LEVEL of the owner-side
+		// flash cross-dissolve (unit<->tree hand-off). Higher = slower, dreamier fade;
+		// lower = snappier. Independent of FadePulseRate, which sets how OFTEN it flashes.
+		Valueable<int> MirageFadeDissolveRate;
+
 		// Mirage.BlinkOnFire : frames the disguise drops after this techno fires,
 		// exposing the real unit to enemies (auto-target + tooltip) like a real
 		// mirage tank's muzzle blink. 0 disables the blink.
@@ -97,6 +102,7 @@ public:
 			, MirageFadeStyle { 0 }      // off (solid) unless configured
 			, MirageFadeOpacity { 50 }
 			, MirageFadePulseRate { 15 }
+			, MirageFadeDissolveRate { 2 }
 			, MirageBlinkOnFire { 15 }
 			, MirageStillDelay { 15 }
 		{ }

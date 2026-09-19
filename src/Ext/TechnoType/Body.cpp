@@ -51,6 +51,7 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 		this->MirageFadeStyle, { "none", "pulse", "translucent", "spawn" });
 	this->MirageFadeOpacity.Read(exINI, pSection, "Mirage.FadeOpacity");
 	this->MirageFadePulseRate.Read(exINI, pSection, "Mirage.FadePulseRate");
+	this->MirageFadeDissolveRate.Read(exINI, pSection, "Mirage.FadeDissolveRate");
 	this->MirageBlinkOnFire.Read(exINI, pSection, "Mirage.BlinkOnFire");
 	this->MirageStillDelay.Read(exINI, pSection, "Mirage.StillDelay");
 
@@ -100,6 +101,7 @@ void TechnoTypeExt::ExtData::Serialize(T& Stm)
 		.Process(this->MirageFadeStyle)
 		.Process(this->MirageFadeOpacity)
 		.Process(this->MirageFadePulseRate)
+		.Process(this->MirageFadeDissolveRate)
 		.Process(this->MirageBlinkOnFire)
 		.Process(this->MirageStillDelay)
 		;
