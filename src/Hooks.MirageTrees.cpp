@@ -1106,6 +1106,35 @@ DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
 	return 0;
 }
 
+// Give the ENEMY an ATTACK cursor over a decoy tree. A disguised unit (a real techno)
+// already shows the enemy an attack cursor, so if decoys DON'T, the enemy can tell the
+// two apart at a glance and the decoys are worthless. In DisplayClass::SetAction the
+// hovered cell's action is computed by the selected unit's virtual at 0x4ABB39 and left
+// in EAX, about to be pushed by the `push eax` at 0x4ABB3C. We override EAX to
+// Action::Attack (5) when the hovered cell holds one of OUR decoys and the current
+// viewer is an enemy of the decoy's owner. Strictly gated → only enemy-viewed decoy
+// cells are ever touched; every other cursor is unchanged.
+// Cell coord is the local at [esp+0x10] (X in low word, Y in high word).
+DEFINE_HOOK(0x4ABB3C, DisplayClass_SetAction_MirageDecoyCursor, 0x5)
+{
+	DWORD const raw = R->Stack<DWORD>(0x10);
+	CellStruct const cell { static_cast<short>(raw & 0xFFFF), static_cast<short>(raw >> 16) };
+	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
+	auto const pTree = pCell ? pCell->GetTerrain(false) : nullptr;
+	if (pTree)
+	{
+		auto const it = DecoyRegistry.find(pTree);
+		if (it != DecoyRegistry.end())
+		{
+			auto const pObs = HouseClass::CurrentPlayer;
+			auto const pOwner = it->second.Owner;
+			if (pObs && pOwner && pObs != pOwner && !pObs->IsAlliedWith(pOwner))
+				R->EAX(5); // Action::Attack — the decoy reads as an attackable target
+		}
+	}
+	return 0;
+}
+
 // #3 OBJECT-LAYER DISGUISE. Instead of skipping the techno's draw and painting the
 // tree in a later top pass (which drew over the shroud and wasn't occluded by front
 // objects), we let the techno draw ITSELF but swap the sprite it blits to the tree.
