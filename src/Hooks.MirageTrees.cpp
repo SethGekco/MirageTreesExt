@@ -1121,6 +1121,21 @@ DEFINE_HOOK(0x4ABB3C, DisplayClass_SetAction_MirageDecoyCursor, 0x5)
 	CellStruct const cell { static_cast<short>(raw & 0xFFFF), static_cast<short>(raw >> 16) };
 	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
 	auto const pTree = pCell ? pCell->GetTerrain(false) : nullptr;
+
+	// [MirageDecoyCurDiag] TEMP diagnostic — confirms the hook fires, the cell read, the
+	// decoy match, and the action value in EAX. Logs whenever a tree is under the cursor,
+	// plus once every 90 fires so we can see it running even over empty ground. Remove
+	// once the decoy attack cursor is confirmed working.
+	{
+		static int s_diag = 0;
+		bool const treeHere = pTree != nullptr;
+		bool const decoyHere = treeHere && DecoyRegistry.find(pTree) != DecoyRegistry.end();
+		if (treeHere || (++s_diag % 90 == 0))
+			Debug::Log("[MirageDecoyCurDiag] raw=%08X cell=(%d,%d) cellOK=%d tree=%p decoy=%d eax=%d obs=%p\n",
+				raw, cell.X, cell.Y, pCell ? 1 : 0, pTree, decoyHere ? 1 : 0,
+				static_cast<int>(R->EAX()), HouseClass::CurrentPlayer);
+	}
+
 	if (pTree)
 	{
 		auto const it = DecoyRegistry.find(pTree);
