@@ -740,11 +740,14 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 			DirtyDecoyArea(pThis->GetMapCoords(), 2); // clear the tree's overhang
 		}
 
-		// NO per-frame redraw for a disguised building. The cover tree is now static
-		// (enemy sees a solid tree, owner sees the building — no flash), so it draws
-		// once and stays cached. Re-dirtying it every frame was what blanked the objects
-		// overhanging it. The activate/deactivate branches above dirty on the reveal
-		// transitions, which is all that's needed.
+		// A disguised building's OWNER-flash animates (manual object-layer tree blit), so
+		// the building must redraw every frame. Use the ENGINE's object mark — NOT the
+		// cell-dirty (DirtyDecoyArea), which is the low-level redraw that blanked the
+		// overhanging objects. Mark(ChangeRedraw) redraws the building (and its manual
+		// tree) in the clean object pass. The enemy's static cover tree is a separate
+		// object and isn't re-dirtied by this.
+		if (isBuilding && (pExt->MirageDisguiseActive || MirageRevealed(pExt)))
+			pThis->Mark(MarkType::ChangeRedraw);
 	}
 
 	// Track how long the disguise has been continuously active (for the auto-lock-
@@ -1232,15 +1235,43 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 	// (the cover tree carries the complementary fade). Matches the vanilla look.
 	if (pThis->WhatAmI() == AbstractType::Building)
 	{
-		MirageMorphSHP = nullptr;      // never swap a building's sprite
-		MirageMorphPalette = nullptr;
+		MirageMorphSHP = nullptr; MirageMorphPalette = nullptr; MirageMorphBlit = BlitterFlags::None;
+		MirageXTechno = nullptr; MirageXTreeSHP = nullptr; MirageXCaptured = false;
+
+		// ENEMY view: hide the building; the static solid COVER tree (drawn once, cached,
+		// no erasing) stands in. Buildings can't swap their strip-clipped sprite to a tall
+		// tree, so the enemy's solid tree must come from the real cover tree.
 		auto const x = MirageBuildingXFade(pThis);
 		if (!x.BuildingVisible)
-		{
-			MirageMorphBlit = BlitterFlags::None;
-			return 0x706602;           // building fully hidden; the cover tree shows
-		}
-		MirageMorphBlit = x.BuildingBlit; // building shown — fading during the cross-blend
+			return 0x706602;
+
+		// OWNER/allies: the vanilla flash via the MANUAL object-layer tree blit (no cover
+		// tree shown to the owner — that would animate and erase). Same path as infantry:
+		// draw the building's own sprite (faded) + blit the tree a second time on top.
+		auto const f = MirageComputeFlash(pThis);
+		if (!f.ShowTree)
+			return 0; // building solid, no tree
+
+		auto const pExt = TechnoExt::ExtMap.Find(pThis);
+		auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
+		auto const pTreeSHP = pTreeType ? pTreeType->GetImage() : nullptr;
+		auto const pCell = pThis->GetCell();
+		if (!pTreeSHP || !pCell)
+			return 0;
+		auto const pTreePal = pCell->LightConvert
+			? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+			: FileSystem::UNITx_PAL;
+
+		// treeSolid: the building can't be swapped away, so fade it to near-gone (TL75)
+		// and paint the tree SOLID on top (it covers the building; a faint peek through
+		// the tree's gaps is a fine "this is mine" tell for the owner). Cross-blend: fade
+		// the building + fade the tree together.
+		MirageMorphBlit = f.ShowTechno ? f.TechnoBlit : BlitterFlags::TransLucent75;
+		MirageXTechno   = pThis;
+		MirageXBodySHP  = pThis->GetImage();
+		MirageXTreeSHP  = pTreeSHP;
+		MirageXTreePal  = pTreePal;
+		MirageXTreeBlit = f.ShowTechno ? f.TreeBlit : BlitterFlags::None;
 		return 0;
 	}
 
