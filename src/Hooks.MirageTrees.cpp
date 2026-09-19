@@ -1116,6 +1116,109 @@ namespace
 	SHPStruct* MirageMorphSHP = nullptr;      // set → swap the blit to this tree SHP
 	ConvertClass* MirageMorphPalette = nullptr;
 	BlitterFlags MirageMorphBlit = BlitterFlags::None; // extra translucency (pulse fade)
+
+	// ---- Manual object-layer tree blit (the CROSS-BLEND flash, no cover tree) ----
+	// During the owner's cross-blend hand-off we need BOTH the techno (fading out) and
+	// the tree (fading in) on screen. The techno draws its own sprite; the tree is
+	// blitted a SECOND time, at the DrawObject epilogue (so it lands on top), in the
+	// object layer (so it composites cleanly — no cell-redraw erasing like a real tree),
+	// at the techno's captured screen position, clipped only by DSurface::ViewBounds (so
+	// a tall tree is never strip-clipped like a building's own draw). Params are captured
+	// from the techno's BODY blit (identified by its SHP) as it draws.
+	TechnoClass*  MirageXTechno   = nullptr;  // techno whose flash we're drawing this DrawObject
+	SHPStruct*    MirageXBodySHP  = nullptr;  // its body image (to spot the body blit)
+	SHPStruct*    MirageXTreeSHP  = nullptr;  // tree to add this frame (null = none)
+	ConvertClass* MirageXTreePal  = nullptr;
+	BlitterFlags  MirageXTreeBlit = BlitterFlags::None;
+	bool          MirageXCaptured = false;    // body params captured this DrawObject
+	bool          MirageXInManual = false;    // re-entrancy guard for our own CC_Draw_Shape
+	Surface*      MirageXSurface  = nullptr;
+	Point2D       MirageXPos {};
+	int           MirageXZAdjust = 0, MirageXZGrad = 0, MirageXZShpFrame = 0, MirageXXOff = 0, MirageXYOff = 0;
+	SHPStruct*    MirageXZShape  = nullptr;
+}
+
+// Owner-side FLASH cadence shared by the cross-blend paths. For the CURRENT viewer:
+// enemy → solid tree, techno hidden; owner/allies in audience → mostly the real techno
+// with a brief tree flash, cross-blending both through the 25/50/75 ramp on the hand-off;
+// otherwise → the real techno. FadePulseRate tunes the pace.
+struct MirageFlashState
+{
+	bool ShowTechno; BlitterFlags TechnoBlit;  // draw the techno's own sprite (faded?)
+	bool ShowTree;   BlitterFlags TreeBlit;     // draw the tree (swap when solid, else manual)
+	bool TreeSolid;                             // tree opaque + techno hidden (swap is enough)
+};
+
+static MirageFlashState MirageComputeFlash(TechnoClass* pThis)
+{
+	MirageFlashState f { true, BlitterFlags::None, false, BlitterFlags::None, false };
+
+	auto const pExt = TechnoExt::ExtMap.Find(pThis);
+	if (!pExt || !pExt->MirageDisguiseActive)
+		return f; // revealed / not disguised → the real techno
+
+	auto const pObs = HouseClass::CurrentPlayer;
+	if (!pObs || !pThis->Owner)
+		return f;
+
+	// Enemy: solid tree, techno hidden.
+	if (pObs != pThis->Owner && !pObs->IsAlliedWith(pThis->Owner))
+	{
+		f.ShowTechno = false; f.ShowTree = true; f.TreeSolid = true;
+		return f;
+	}
+
+	auto const pTypeExt = TechnoTypeExt::ExtMap.Find(pThis->GetTechnoType());
+	int const aud = pTypeExt ? pTypeExt->MirageFadeAudience : 0;
+	bool const inAudience =
+		aud == AUD_ALL ||
+		(aud == AUD_OWNER && pObs == pThis->Owner) ||
+		(aud == AUD_ALLIES && (pObs == pThis->Owner || pObs->IsAlliedWith(pThis->Owner)));
+	if (!inAudience)
+		return f; // owner not in audience → the real techno, no flash
+
+	static const BlitterFlags fadeOut[3] = // solid -> gone
+		{ BlitterFlags::TransLucent25, BlitterFlags::TransLucent50, BlitterFlags::TransLucent75 };
+	static const BlitterFlags fadeIn[3]  = // gone -> solid
+		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
+
+	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
+	if (rate < 1) rate = 1;
+	int const lvl = 2;
+	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 2 ? 2 : i); };
+
+	int const F         = 3 * lvl;   // 6-frame fade (3 levels)
+	int const treeSolid = 3 * lvl;   // brief tree hold
+	int const unitSolid = 3 * rate;  // gap between flashes (the tunable = PACE)
+	int const s0 = unitSolid;
+	int const s1 = s0 + F;           // cross-blend: techno out + tree in
+	int const s2 = s1 + treeSolid;   // tree solid, techno hidden
+	int const cycle = s2 + F;        // cross-blend: tree out + techno in
+
+	int const phase = Unsorted::CurrentFrame % cycle;
+	if (phase < s0)
+	{
+		// techno solid, no tree (default f)
+	}
+	else if (phase < s1)             // fade toward the tree — both drawn
+	{
+		int const o = phase - s0;
+		f.ShowTechno = true; f.TechnoBlit = fadeOut[idx(o)];
+		f.ShowTree   = true; f.TreeBlit   = fadeIn [idx(o)];
+	}
+	else if (phase < s2)             // tree fully shown, techno hidden
+	{
+		f.ShowTechno = false;
+		f.ShowTree   = true; f.TreeSolid = true;
+	}
+	else                             // fade back to the techno — both drawn
+	{
+		int const o = phase - s2;
+		f.ShowTechno = true; f.TechnoBlit = fadeIn [idx(o)];
+		f.ShowTree   = true; f.TreeBlit   = fadeOut[idx(o)];
+	}
+
+	return f;
 }
 
 DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
@@ -1141,13 +1244,47 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 		return 0;
 	}
 
-	// Infantry/aircraft: the sprite-swap morph (renders full & correct, unlike a
-	// building's strip-clipped draw).
-	auto const m = MirageComputeMorph(pThis);
-	MirageMorphSHP     = m.DrawTree ? m.SHP : nullptr; // swap to the tree this frame?
-	MirageMorphPalette = m.Palette;
-	MirageMorphBlit    = m.Blit;                        // pulse-fade translucency (may be None)
-	return 0; // let the techno draw itself; CC_Draw_Shape paints it as the tree / fades it
+	// Infantry/aircraft: object-layer sprite that renders full & correct. The flash is
+	// a TRUE cross-blend (matching vanilla): when the tree fully covers, swap the unit
+	// sprite to the tree (solid, object layer); on the hand-off draw the unit FADED and
+	// blit the tree a second time (faded) via the manual object-layer path so both are
+	// on screen at once — no dark lone-sprite frame, no cell-redraw erasing.
+	MirageMorphSHP = nullptr; MirageMorphPalette = nullptr; MirageMorphBlit = BlitterFlags::None;
+	MirageXTechno = nullptr; MirageXTreeSHP = nullptr; MirageXCaptured = false;
+
+	auto const f = MirageComputeFlash(pThis);
+	if (!f.ShowTree)
+		return 0; // unit solid — draw the unit normally
+
+	// Resolve the tree sprite + palette (same as a real tree on this cell).
+	auto const pExt = TechnoExt::ExtMap.Find(pThis);
+	auto const pTreeType = pExt ? pExt->MirageDisguiseTree : nullptr;
+	auto const pTreeSHP = pTreeType ? pTreeType->GetImage() : nullptr;
+	auto const pCell = pThis->GetCell();
+	if (!pTreeSHP || !pCell)
+		return 0; // nothing to draw as — fall back to the real unit
+	auto const pTreePal = pCell->LightConvert
+		? reinterpret_cast<ConvertClass*>(pCell->LightConvert)
+		: FileSystem::UNITx_PAL;
+
+	if (f.TreeSolid || !f.ShowTechno)
+	{
+		// Tree fully covers: swap the unit's own sprite to the tree (solid, full).
+		MirageMorphSHP = pTreeSHP;
+		MirageMorphPalette = pTreePal;
+		MirageMorphBlit = BlitterFlags::None;
+		return 0;
+	}
+
+	// Cross-blend hand-off: fade the unit's own sprite, and queue the tree as a second
+	// object-layer blit (captured from the unit's body draw, painted at the epilogue).
+	MirageMorphBlit = f.TechnoBlit;
+	MirageXTechno   = pThis;
+	MirageXBodySHP  = pThis->GetImage();
+	MirageXTreeSHP  = pTreeSHP;
+	MirageXTreePal  = pTreePal;
+	MirageXTreeBlit = f.TreeBlit;
+	return 0;
 }
 
 // Clear the swap when the techno's DrawObject returns (0x706602 = its epilogue:
@@ -1155,8 +1292,27 @@ DEFINE_HOOK(0x705E15, TechnoClass_DrawObject_MirageDisguise, 0x5)
 // object's own sprite blits and never leaks to later draws.
 DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
 {
+	// Cross-blend: paint the tree as a SECOND object-layer blit, on top of the (faded)
+	// unit, at the unit's captured screen position, clipped only by the full view bounds
+	// (so a tall tree isn't strip-clipped). Object layer => composites cleanly, no
+	// cell-redraw erasing. Always faded here (the hand-off), so drop Alpha (Alpha +
+	// translucency mis-renders) and OR in the fade level. Null ZShape: no Z-read (would
+	// cull the overhang), so the tree paints whole.
+	if (MirageXCaptured && MirageXTreeSHP && MirageXSurface)
+	{
+		DWORD const tl = static_cast<DWORD>(MirageXTreeBlit) & 0x6u;
+		DWORD const treeFlags = 0x0600u | tl; // lighting bits (no Alpha) + fade
+		MirageXInManual = true;
+		CC_Draw_Shape(MirageXSurface, MirageXTreePal, MirageXTreeSHP, 0,
+			&MirageXPos, &DSurface::ViewBounds, static_cast<BlitterFlags>(treeFlags), 0,
+			MirageXZAdjust, static_cast<ZGradient>(MirageXZGrad), 1000, 0,
+			nullptr, 0, MirageXXOff, MirageXYOff);
+		MirageXInManual = false;
+	}
+
 	MirageMorphSHP = nullptr;
 	MirageMorphBlit = BlitterFlags::None;
+	MirageXTechno = nullptr; MirageXTreeSHP = nullptr; MirageXCaptured = false;
 	return 0;
 }
 
@@ -1174,7 +1330,29 @@ DEFINE_HOOK(0x706602, TechnoClass_DrawObject_MirageDisguise_End, 0x7)
 //     tree's overhang ("part of the tree cut to the shape of the cell behind").
 DEFINE_HOOK(0x4AED70, CC_Draw_Shape_MirageSwap, 0x6)
 {
+	if (MirageXInManual)
+		return 0; // this IS our own manual tree blit — leave every param as passed
+
 	auto const morphBlit = static_cast<DWORD>(MirageMorphBlit);
+
+	// Cross-blend: capture the disguised techno's BODY draw params (surface, screen
+	// position, Z) so the epilogue can blit the tree a second time on top, in the same
+	// object layer. Identify the body blit by its SHP; capture once.
+	if (MirageXTreeSHP && MirageXTechno && !MirageXCaptured
+		&& reinterpret_cast<SHPStruct*>(R->Stack<DWORD>(0x4)) == MirageXBodySHP)
+	{
+		MirageXSurface   = reinterpret_cast<Surface*>(R->ECX());
+		if (auto const pPos = reinterpret_cast<Point2D*>(R->Stack<DWORD>(0xC)))
+			MirageXPos = *pPos;
+		MirageXZAdjust   = R->Stack<int>(0x1C);
+		MirageXZGrad     = R->Stack<int>(0x20);
+		MirageXZShape    = reinterpret_cast<SHPStruct*>(R->Stack<DWORD>(0x2C));
+		MirageXZShpFrame = R->Stack<int>(0x30);
+		MirageXXOff      = R->Stack<int>(0x34);
+		MirageXYOff      = R->Stack<int>(0x38);
+		MirageXCaptured  = true;
+	}
+
 	if (MirageMorphSHP)
 	{
 		// Swap the unit sprite for the tree (frame 0), cell palette, no house-colour
