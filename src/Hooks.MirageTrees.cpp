@@ -1117,44 +1117,45 @@ DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
 }
 
 // Give the ENEMY an ATTACK cursor over a decoy tree. A disguised unit (a real techno)
-// already shows the enemy an attack cursor, so if decoys DON'T, the enemy can tell the
-// two apart at a glance and the decoys are worthless. In DisplayClass::SetAction the
-// hovered cell's action is computed by the selected unit's virtual at 0x4ABB39 and left
-// in EAX, about to be pushed by the `push eax` at 0x4ABB3C. We override EAX to
-// Action::Attack (5) when the hovered cell holds one of OUR decoys and the current
-// viewer is an enemy of the decoy's owner. Strictly gated → only enemy-viewed decoy
-// cells are ever touched; every other cursor is unchanged.
-// Cell coord is the local at [esp+0x10] (X in low word, Y in high word).
-DEFINE_HOOK(0x4ABB3C, DisplayClass_SetAction_MirageDecoyCursor, 0x5)
+// already shows the enemy an attack cursor via TechnoClass::GetActionOnObject (0x6FFEC0,
+// the shared base every acting unit calls with the hovered object). For a decoy TREE the
+// base returns Action::None, so we override: when the hovered object is one of OUR decoys
+// and the acting unit is an enemy of the decoy's owner, return Action::Attack (5).
+//
+// __thiscall: ECX = the acting unit, [esp+4] = the hovered object, ret 8. Hook the ENTRY
+// (before the prologue, so the stack is clean); to return Attack, set EAX and jump to the
+// function's own bare `ret 8` at 0x7005EF (the None-exit tail, past its xor/pops) — valid
+// because no prologue ran, so no registers to restore.
+DEFINE_HOOK(0x6FFEC0, TechnoClass_GetActionOnObject_MirageDecoy, 0x6)
 {
-	DWORD const raw = R->Stack<DWORD>(0x10);
-	CellStruct const cell { static_cast<short>(raw & 0xFFFF), static_cast<short>(raw >> 16) };
-	auto const pCell = MapClass::Instance.TryGetCellAt(cell);
-	auto const pTree = pCell ? pCell->GetTerrain(false) : nullptr;
+	GET(TechnoClass*, pThis, ECX);           // the acting/selecting unit
+	GET_STACK(ObjectClass*, pTarget, 0x4);   // the hovered object
+	if (!pTarget || !pThis)
+		return 0;
 
-	// [MirageDecoyCurDiag] TEMP diagnostic — confirms the hook fires, the cell read, the
-	// decoy match, and the action value in EAX. Logs whenever a tree is under the cursor,
-	// plus once every 90 fires so we can see it running even over empty ground. Remove
-	// once the decoy attack cursor is confirmed working.
+	bool const isTree = pTarget->WhatAmI() == AbstractType::Terrain;
+	auto const it = isTree
+		? DecoyRegistry.find(static_cast<TerrainClass*>(pTarget))
+		: DecoyRegistry.end();
+	bool const isDecoy = it != DecoyRegistry.end();
+
+	// [MirageDecoyCurDiag] TEMP — confirms decoys reach GetActionOnObject. Logs any tree
+	// target, plus a heartbeat, so one hover tells us whether this is the right path.
 	{
 		static int s_diag = 0;
-		bool const treeHere = pTree != nullptr;
-		bool const decoyHere = treeHere && DecoyRegistry.find(pTree) != DecoyRegistry.end();
-		if (treeHere || (++s_diag % 90 == 0))
-			Debug::Log("[MirageDecoyCurDiag] raw=%08X cell=(%d,%d) cellOK=%d tree=%p decoy=%d eax=%d obs=%p\n",
-				raw, cell.X, cell.Y, pCell ? 1 : 0, pTree, decoyHere ? 1 : 0,
-				static_cast<int>(R->EAX()), HouseClass::CurrentPlayer);
+		if (isTree || (++s_diag % 200 == 0))
+			Debug::Log("[MirageDecoyCurDiag] GAO this=%p tgt=%p what=%d tree=%d decoy=%d\n",
+				pThis, pTarget, static_cast<int>(pTarget->WhatAmI()), isTree ? 1 : 0, isDecoy ? 1 : 0);
 	}
 
-	if (pTree)
+	if (isDecoy)
 	{
-		auto const it = DecoyRegistry.find(pTree);
-		if (it != DecoyRegistry.end())
+		auto const pOwner = it->second.Owner;
+		if (pThis->Owner && pOwner && pThis->Owner != pOwner
+			&& !pThis->Owner->IsAlliedWith(pOwner))
 		{
-			auto const pObs = HouseClass::CurrentPlayer;
-			auto const pOwner = it->second.Owner;
-			if (pObs && pOwner && pObs != pOwner && !pObs->IsAlliedWith(pOwner))
-				R->EAX(5); // Action::Attack — the decoy reads as an attackable target
+			R->EAX(5);          // Action::Attack
+			return 0x7005EF;    // bare `ret 8` — returns Attack, cleans args, no prologue touched
 		}
 	}
 	return 0;
