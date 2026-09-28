@@ -756,18 +756,28 @@ void TechnoExt::UpdateMirageTrees(TechnoClass* pThis)
 	{
 		if (pExt->MirageDisguisedFrames < 0x7FFF)
 			++pExt->MirageDisguisedFrames;
-
-		// The owner pulse cross-fades the render (unit<->tree) across the transition
-		// frames of a 90-frame cycle (fades at [69,75) and [84,90)). The translucency
-		// changes each of those frames, so dirty the tall tree's overhang across the
-		// whole active window (incl. the wrap at 0) or it leaves partial tops / ghosts
-		// as it fades. Harmless for the steady enemy-view tree (redraws the same tree).
-		int const phase = Unsorted::CurrentFrame % 90;
-		if (phase == 0 || phase >= 69)
-			DirtyDecoyArea(pThis->GetMapCoords(), 2);
 	}
 	else
 		pExt->MirageDisguisedFrames = 0;
+
+	// GHOST CLEARING for the manual object-layer flash tree (infantry/aircraft). The
+	// tree is taller than the unit and repainted at the unit's spot each frame; the
+	// engine only clears the unit's OWN rect, so the foliage lingers when the unit moves
+	// or the flash ends — leaving stray trees at old (often re-shrouded) positions.
+	// Track the last cell the tree was flashed at; when it changes (or the disguise
+	// ends), dirty a generous block at the OLD cell so the tall foliage is repainted
+	// away. Buildings don't move and use Mark(ChangeRedraw), so this is unit-only.
+	if (pThis->WhatAmI() != AbstractType::Building)
+	{
+		CellStruct const here = pThis->GetMapCoords();
+		bool const flashing = pExt->MirageDisguiseActive;
+		if (pExt->MirageFlashCell != here || !flashing)
+		{
+			if (pExt->MirageFlashCell.X != 0 || pExt->MirageFlashCell.Y != 0)
+				DirtyDecoyArea(pExt->MirageFlashCell, 4); // clear the tall foliage at the old spot
+			pExt->MirageFlashCell = flashing ? here : CellStruct { 0, 0 };
+		}
+	}
 
 	// Decoys: separate scattered tree objects (independent of disguise).
 	if (pTypeExt->MirageDecoys)

@@ -48,6 +48,12 @@ public:
 		// that it has moved and tear the forest down.
 		CellStruct MirageAnchor;
 
+		// Last cell the manual object-layer flash tree was painted at (infantry/aircraft).
+		// The flash tree is taller than the unit, so when the unit moves the engine leaves
+		// the foliage behind; we dirty this old cell to clear the ghost. Transient render
+		// state, not serialized. {0,0} = none.
+		CellStruct MirageFlashCell;
+
 		// Diagnostic: log the "seen a mirage-capable techno" line once only.
 		bool MirageDiagLogged;
 
@@ -74,6 +80,7 @@ public:
 			, MirageDisguiseActive { false }
 			, MirageDisguiseTree { nullptr }
 			, MirageAnchor {}
+			, MirageFlashCell {}
 			, MirageDiagLogged { false }
 			, MirageRevealTimer { 0 }
 			, MirageStillFrames { 0 }
