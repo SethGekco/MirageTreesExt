@@ -48,7 +48,7 @@ void TechnoTypeExt::ExtData::LoadFromINIFile(CCINIClass* const pINI)
 	this->MirageFadeAudience = ParseKeyword(pINI, pSection, "Mirage.FadeAudience",
 		this->MirageFadeAudience, { "none", "owner", "allies", "all" });
 	this->MirageFadeStyle = ParseKeyword(pINI, pSection, "Mirage.FadeStyle",
-		this->MirageFadeStyle, { "none", "pulse", "translucent", "spawn" });
+		this->MirageFadeStyle, { "none", "pulse", "translucent", "spawn", "vanilla" });
 	this->MirageFadeOpacity.Read(exINI, pSection, "Mirage.FadeOpacity");
 	this->MirageFadePulseRate.Read(exINI, pSection, "Mirage.FadePulseRate");
 	this->MirageFadeDissolveRate.Read(exINI, pSection, "Mirage.FadeDissolveRate");

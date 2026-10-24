@@ -60,7 +60,7 @@
 namespace
 {
 	enum FadeAudience { AUD_NONE = 0, AUD_OWNER = 1, AUD_ALLIES = 2, AUD_ALL = 3 };
-	enum FadeStyle { STY_NONE = 0, STY_PULSE = 1, STY_TRANSLUCENT = 2, STY_SPAWN = 3 };
+	enum FadeStyle { STY_NONE = 0, STY_PULSE = 1, STY_TRANSLUCENT = 2, STY_SPAWN = 3, STY_VANILLA = 4 };
 
 	struct DecoyInfo
 	{
@@ -162,7 +162,9 @@ namespace
 			return BlitterFlags::None;
 
 		auto const& d = it->second;
-		if (d.Style == STY_NONE || !ObserverInAudience(d))
+		// STY_VANILLA is a DISGUISE-flash preset only; decoys under it stay solid (None),
+		// same as STY_NONE.
+		if (d.Style == STY_NONE || d.Style == STY_VANILLA || !ObserverInAudience(d))
 			return BlitterFlags::None;
 
 		int const rate = d.PulseRate > 0 ? d.PulseRate : 15;
@@ -1240,15 +1242,29 @@ static MirageFlashState MirageComputeFlash(TechnoClass* pThis)
 	static const BlitterFlags fadeIn[3]  = // gone -> solid
 		{ BlitterFlags::TransLucent75, BlitterFlags::TransLucent50, BlitterFlags::TransLucent25 };
 
-	int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
-	if (rate < 1) rate = 1;
-	int lvl = pTypeExt ? pTypeExt->MirageFadeDissolveRate : 2; // frames per translucency level
+	bool const vanilla = pTypeExt && pTypeExt->MirageFadeStyle == STY_VANILLA;
+
+	int lvl = vanilla ? 2 : (pTypeExt ? pTypeExt->MirageFadeDissolveRate : 2);
 	if (lvl < 1) lvl = 1;
 	auto const idx = [lvl](int off) { int i = off / lvl; return i < 0 ? 0 : (i > 2 ? 2 : i); };
 
-	int const F         = 3 * lvl;   // 6-frame fade (3 levels)
-	int const treeSolid = 3 * lvl;   // brief tree hold
-	int const unitSolid = 3 * rate;  // gap between flashes (the tunable = PACE)
+	int F, treeSolid, unitSolid;
+	if (vanilla)
+	{
+		// VANILLA preset — mirrors the native mirage tank's rhythm (measured frame-by-frame
+		// from Rex's comparison GIF): a long tank hold, a LONGER tree hold, a quick fade, on
+		// a slow ~several-second cycle (~25% tree). Fixed cadence (ignores FadePulseRate/
+		// FadeDissolveRate) so it matches the engine's own. Tune these three if it drifts.
+		F = 6; treeSolid = 30; unitSolid = 120;
+	}
+	else
+	{
+		int rate = pTypeExt ? pTypeExt->MirageFadePulseRate : 15;
+		if (rate < 1) rate = 1;
+		F = 3 * lvl;          // fade duration (3 levels)
+		treeSolid = 3 * lvl;  // tree hold
+		unitSolid = 3 * rate; // gap between flashes (the tunable = PACE)
+	}
 	int const s0 = unitSolid;
 	int const s1 = s0 + F;           // cross-blend: techno out + tree in
 	int const s2 = s1 + treeSolid;   // tree solid, techno hidden
