@@ -1556,13 +1556,13 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 	if (auto const it = CoverRegistry.find(pThis); it != CoverRegistry.end())
 	{
 		auto const pCell = pThis->GetCell();
-		if (!pCell)
+		// Skip ONLY never-scouted black shroud = shrouded AND NOT fogged. A fogged cell is
+		// scouted/remembered, so the disguise stays drawn there like standing terrain.
+		// IsShrouded() alone conflated the two (IntelExt's fog trips it, so the disguise was
+		// vanishing under fog); IsLocationFogged is the real discriminator — IntelExt answers
+		// it truthfully, and vanilla stubs it to false where there is no real fog anyway.
+		if (!pCell || (pCell->IsShrouded() && !MapClass::Instance.IsLocationFogged(pThis->Location)))
 			return 0x71C353;
-		// Deliberately NO shroud/fog skip for the COVER tree (the building's disguise).
-		// IntelExt's fog was tripping IsShrouded() and making the disguise vanish under
-		// fog — worse than a real tree, which persists (remembered) under fog. Since the
-		// two DLLs are independent, keep the disguise drawn regardless of shroud/fog so it
-		// behaves like standing terrain and stays compatible with any vision system.
 		auto const x = MirageBuildingXFade(it->second);
 		if (!x.TreeVisible)
 			return 0x71C353;                       // building shown instead -> hide tree
@@ -1578,13 +1578,13 @@ DEFINE_HOOK(0x71C2BC, TerrainClass_Draw_MirageStash, 0x6)
 		// the draw's own epilogue (0x71C353: pop edi/esi/ebp/ebx; add esp,0x14; ret 8) —
 		// the stack here is exactly that frame, so this cleanly skips tree + shadow.
 		//
-		// NOTE: only IsShrouded(), NOT IsFogged(). IsFogged() flickers true/false even
-		// for fully-visible cells (see the pillbox-flicker fix + broken YR fog layer),
-		// which made decoys strobe on/off and the terrain behind them "mess up". The
-		// cost is a decoy may linger through grey fog after you leave an area — a far
-		// rarer, milder artifact than constant flicker in your own base.
+		// Skip ONLY never-scouted black shroud = shrouded AND NOT fogged (so a decoy
+		// persists under fog like remembered terrain, matching the cover tree). Do NOT use
+		// the cell IsFogged() accessor — it flickers true/false for visible cells (broken YR
+		// fog layer). MapClass::IsLocationFogged is the reliable discriminator: IntelExt
+		// answers it truthfully, vanilla stubs it false (no real fog to worry about there).
 		auto const pCell = pThis->GetCell();
-		if (!pCell || pCell->IsShrouded())
+		if (!pCell || (pCell->IsShrouded() && !MapClass::Instance.IsLocationFogged(pThis->Location)))
 			return 0x71C353;
 	}
 
