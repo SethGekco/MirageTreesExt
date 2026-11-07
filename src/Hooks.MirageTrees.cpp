@@ -1103,17 +1103,27 @@ DEFINE_HOOK(0x4ABC31, DisplayClass_SetAction_MirageTooltip, 0xA)
 	return 0;
 }
 
-// The DELAYED map hover-name tooltip (DisplayClass::GetToolTip) is a SEPARATE path
-// that also names the hovered object. At 0x4AE668 it loads the object from
-// [esp+0xC] into ECX then calls its GetUIName ([edx+0x90]) at 0x4AE672. We can't
-// blank it via the getter for buildings — Antares owns BuildingClass::GetUIName
-// (EnemyUIName) and wins the hook chain — so intercept the CALL SITE instead:
-// for a disguised-from-viewer object, jump to the function's own "no object"
-// return (0x4AE69B: xor eax,eax; ret) so no name is produced. Covers every class.
-DEFINE_HOOK(0x4AE668, DisplayClass_GetToolTip_MirageName, 0x8)
+// The DELAYED map hover-name tooltip (DisplayClass::GetToolTip 0x4AE4F0) is a
+// SEPARATE path that also names the hovered object, via GetUIName ([edx+0x90]) at
+// 0x4AE672. We can't blank it via the getter for buildings — Antares owns
+// BuildingClass::GetUIName (EnemyUIName) and wins the hook chain — so intercept
+// the function before the name instead: for a disguised-from-viewer object, jump
+// to its own "no tooltip" return (0x4AE69B: xor eax,eax; ret) so no name is
+// produced. Covers every class.
+//
+// Seat 0x4AE600 (`mov ecx,[esp+0xC]; test ecx,ecx`) is where the hovered object
+// is first loaded; every path to the name passes through it. It used to be
+// 0x4AE668 (stolen 8), but that patch covered 0x4AE66C, which the engine jumps to
+// for your own techno (0x4AE620) and for any non-techno (0x4AE699). The jump then
+// ran a byte of our E9's rel32 as an instruction — `push es` crashed with EIP 0,
+// ESI 0x2B (2026-11-07) — and the byte changed with the stub address per launch.
+// Nothing branches into 0x4AE601..0x4AE605 and the stolen bytes hold no relative
+// operand, so `return 0` is safe here. The object may be a non-techno (a tree).
+DEFINE_HOOK(0x4AE600, DisplayClass_GetToolTip_MirageName, 0x6)
 {
-	GET_STACK(TechnoClass*, pObj, 0xC);
-	if (pObj && MirageHiddenFromViewer(pObj))
+	GET_STACK(ObjectClass*, pObj, 0xC);
+	if (pObj && (pObj->AbstractFlags & AbstractFlags::Techno) != AbstractFlags::None
+		&& MirageHiddenFromViewer(static_cast<TechnoClass*>(pObj)))
 		return 0x4AE69B; // returns null tooltip text
 	return 0;
 }
