@@ -1138,31 +1138,31 @@ DEFINE_HOOK(0x4AE600, DisplayClass_GetToolTip_MirageName, 0x6)
 // (before the prologue, so the stack is clean); to return Attack, set EAX and jump to the
 // function's own bare `ret 8` at 0x7005EF (the None-exit tail, past its xor/pops) — valid
 // because no prologue ran, so no registers to restore.
-DEFINE_HOOK(0x6FFEC0, TechnoClass_GetActionOnObject_MirageDecoy, 0x6)
+DEFINE_HOOK(0x6FFEC0, TechnoClass_GetActionOnObject_MirageTree, 0x6)
 {
 	GET(TechnoClass*, pThis, ECX);           // the acting/selecting unit
 	GET_STACK(ObjectClass*, pTarget, 0x4);   // the hovered object
-	if (!pTarget || !pThis)
+	if (!pTarget || !pThis || pTarget->WhatAmI() != AbstractType::Terrain)
 		return 0;
+	auto const pTree = static_cast<TerrainClass*>(pTarget);
 
-	bool const isTree = pTarget->WhatAmI() == AbstractType::Terrain;
-	auto const it = isTree
-		? DecoyRegistry.find(static_cast<TerrainClass*>(pTarget))
-		: DecoyRegistry.end();
-	bool const isDecoy = it != DecoyRegistry.end();
-
-	// [MirageDecoyCurDiag] TEMP — confirms decoys reach GetActionOnObject. Logs any tree
-	// target, plus a heartbeat, so one hover tells us whether this is the right path.
+	// COVER tree (building disguise): the cursor must act on the BUILDING underneath, not
+	// the force-fireable tree — otherwise the OWNER gets an attack cursor on their own
+	// pillbox (a cover tree can win cursor resolution at a cell/edge), and an enemy would
+	// target the tree instead of the pillbox. Redirect the target to the source building
+	// and let the function compute normally: friendly cursor for the owner, Attack on the
+	// pillbox for enemies.
+	if (auto const cit = CoverRegistry.find(pTree); cit != CoverRegistry.end() && cit->second)
 	{
-		static int s_diag = 0;
-		if (isTree || (++s_diag % 200 == 0))
-			Debug::Log("[MirageDecoyCurDiag] GAO this=%p tgt=%p what=%d tree=%d decoy=%d\n",
-				pThis, pTarget, static_cast<int>(pTarget->WhatAmI()), isTree ? 1 : 0, isDecoy ? 1 : 0);
+		R->Stack<DWORD>(0x4, reinterpret_cast<DWORD>(cit->second)); // target := source building
+		return 0;
 	}
 
-	if (isDecoy)
+	// DECOY tree: give an ENEMY the attack cursor so a decoy reads as an attackable target,
+	// indistinguishable from a disguised unit. Owner/allies fall through to the normal cursor.
+	if (auto const dit = DecoyRegistry.find(pTree); dit != DecoyRegistry.end())
 	{
-		auto const pOwner = it->second.Owner;
+		auto const pOwner = dit->second.Owner;
 		if (pThis->Owner && pOwner && pThis->Owner != pOwner
 			&& !pThis->Owner->IsAlliedWith(pOwner))
 		{
